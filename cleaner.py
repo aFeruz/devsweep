@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
-"""Storage Cleaner — laptopdagi keraksiz fayllarni topib, tanlab o'chiradigan lokal app.
+"""DevSweep — laptopdagi keraksiz fayllarni topib, tanlab o'chiradigan lokal app.
 
 Ishga tushirish:  python3 cleaner.py   (brauzerda http://127.0.0.1:8765 ochiladi)
+Desktop ilova:    python3 gui.py
 Hech narsa avtomatik o'chirilmaydi — faqat siz tanlagan va tasdiqlagan narsalar.
 """
 import json
@@ -21,6 +22,10 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from urllib.parse import parse_qs, urlparse
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from i18n import LANGS, T, _, get_lang, set_lang, table  # noqa: E402
 
 HOME = Path.home()
 PORT = int(os.environ.get("PORT", 8765))
@@ -48,7 +53,7 @@ def run(cmd, timeout=60):
 
 
 def du(path):
-    rc, out, _ = run(["du", "-sk", "--one-file-system", str(path)], timeout=600)
+    rc, out, _err = run(["du", "-sk", "--one-file-system", str(path)], timeout=600)
     try:
         return int(out.split()[0]) * 1024
     except (IndexError, ValueError):
@@ -81,8 +86,8 @@ class Item(dict):
     pass
 
 
-def item(group, title, desc, size, safety, action, path=None, age=None, warn=None,
-         used=None, track_recent=False, paths=None):
+def item(gkey, title, desc, size, safety, action, path=None, age=None, warn=None,
+         used=None, track_recent=False, paths=None, app=None):
     """age — oxirgi o'zgarish (kun); used — oxirgi ishlatilgan (kun).
     track_recent=True bo'lsa, RECENT_DAYS ichida ishlatilgan narsa "yaqinda" deb belgilanadi."""
     iid = f"i{len(ACTIONS)}"
@@ -91,8 +96,11 @@ def item(group, title, desc, size, safety, action, path=None, age=None, warn=Non
     recent = bool(track_recent and last is not None and last < RECENT_DAYS)
     if recent:
         safety = CAREFUL
-    return Item(id=iid, group=group, title=title, desc=desc, size=size, safety=safety,
-                path=str(path) if path else None, paths=paths, age=age, used=used, warn=warn, recent=recent)
+    if app:  # dastur ochiq — ogohlantirish
+        warn = _("warn.running", app=app)
+    return Item(id=iid, gkey=gkey, group=_(f"group.{gkey}", mb=BIG_FILE >> 20), title=title, desc=desc,
+                size=size, safety=safety, path=str(path) if path else None, paths=paths, age=age, used=used,
+                warn=warn, app=app, recent=recent)
 
 
 def parse_time(s):
@@ -120,11 +128,11 @@ def rm_files(paths):
         for f in paths:
             p = Path(f)
             if home not in p.resolve().parents:
-                raise RuntimeError(f"Xavfsizlik: {p} uy papkasidan tashqarida")
+                raise RuntimeError(_("res.outside", path=p))
             if p.is_file() or p.is_symlink():
                 p.unlink()
                 n += 1
-        return f"{n} ta fayl o'chirildi"
+        return _("res.files", n=n)
     return {"kind": "py", "fn": _do}
 
 
@@ -134,16 +142,16 @@ def rm_path(path, contents_only=False):
         p = Path(path)
         real = p.resolve()
         if HOME.resolve() not in real.parents:
-            raise RuntimeError(f"Xavfsizlik: {p} uy papkasidan tashqarida")
+            raise RuntimeError(_("res.outside", path=p))
         if not p.exists():
-            return "allaqachon yo'q"
+            return _("res.gone")
         targets = list(p.iterdir()) if contents_only else [p]
         for t in targets:
             if t.is_symlink() or t.is_file():
                 t.unlink()
             else:
                 shutil.rmtree(t)
-        return "o'chirildi"
+        return _("res.deleted")
     return {"kind": "py", "fn": _do}
 
 
@@ -162,7 +170,7 @@ def docker_inspect(kind, ids, fmt):
     out = {}
     ids = list(ids)
     for i in range(0, len(ids), 200):
-        rc, o, _ = run(["docker", kind, "inspect", "--format", fmt, *ids[i:i + 200]], timeout=120)
+        rc, o, _err = run(["docker", kind, "inspect", "--format", fmt, *ids[i:i + 200]], timeout=120)
         for line in o.splitlines():
             parts = line.split("|")
             out[parts[0]] = parts[1:]
@@ -173,11 +181,11 @@ def scan_docker():
     items = []
     if not shutil.which("docker"):
         return items
-    rc, out, _ = run(["docker", "system", "df", "-v", "--format", "{{json .}}"], timeout=120)
+    rc, out, _err = run(["docker", "system", "df", "-v", "--format", "{{json .}}"], timeout=120)
     if rc != 0:
         return items
     d = json.loads(out)
-    G = "Docker"
+    G = "docker"
     hours = f"{RECENT_DAYS * 24}h"
 
     # --- konteynerlar: oxirgi ishga tushgan/to'xtagan vaqtiga qarab
@@ -187,9 +195,8 @@ def scan_docker():
     for c in conts:
         full = next((v for k, v in info.items() if k.startswith(c["ID"])), [])
         used = days_since(*map(parse_time, full))
-        items.append(item(G, f"To'xtatilgan konteyner: {c.get('Names', '?')}",
-                          f"{c.get('Image', '')} · {c.get('Status', '')}. Volume'dagi ma'lumotlar o'chmaydi, "
-                          f"lekin konteynerni qayta yaratish kerak bo'ladi.",
+        items.append(item(G, _("docker.container.title", name=c.get("Names", "?")),
+                          _("docker.container.desc", image=c.get("Image", ""), status=c.get("Status", "")),
                           parse_docker_size(c.get("Size", "").split(" ")[0]), REVIEW,
                           cmd("docker", "rm", c["ID"]), used=used, track_recent=True))
 
@@ -203,9 +210,8 @@ def scan_docker():
     dangling = [i for i in unused if i.get("Repository") == "<none>"]
     old_d = [i for i in dangling if (i["_used"] or 0) >= RECENT_DAYS]
     if old_d:
-        items.append(item(G, f"Nomsiz (dangling) image'lar ({len(old_d)} ta, {RECENT_DAYS}+ kunlik)",
-                          f"Eski build'lardan qolgan <none> image'lar. Oxirgi {RECENT_DAYS} kundagilari tegilmaydi"
-                          f" ({len(dangling) - len(old_d)} ta).",
+        items.append(item(G, _("docker.dangling.title", n=len(old_d), days=RECENT_DAYS),
+                          _("docker.dangling.desc", days=RECENT_DAYS, kept=len(dangling) - len(old_d)),
                           sum(parse_docker_size(i.get("UniqueSize")) for i in old_d), SAFE,
                           cmd("docker", "image", "prune", "-f", "--filter", f"until={hours}")))
 
@@ -213,9 +219,7 @@ def scan_docker():
         if i.get("Repository") == "<none>":
             continue
         ref = f"{i['Repository']}:{i['Tag']}"
-        items.append(item(G, f"Image: {ref}",
-                          f"Hech bir konteyner ishlatmayapti · to'liq hajmi {i.get('Size')} "
-                          f"(o'ziga xos qismi ko'rsatilgan, umumiy qatlamlar ham bo'shashi mumkin)",
+        items.append(item(G, _("docker.image.title", ref=ref), _("docker.image.desc", size=i.get("Size")),
                           parse_docker_size(i.get("UniqueSize")), REVIEW, cmd("docker", "rmi", ref),
                           used=i["_used"], track_recent=True))
 
@@ -225,9 +229,8 @@ def scan_docker():
         c["_used"] = days_since(parse_time(c.get("LastUsedAt")), parse_time(c.get("CreatedAt")))
     old_c = [c for c in cache if (c["_used"] or 0) >= RECENT_DAYS]
     if old_c:
-        items.append(item(G, f"Build cache ({len(old_c)} ta yozuv, {RECENT_DAYS}+ kun ishlatilmagan)",
-                          f"Eski docker build keshi. Oxirgi {RECENT_DAYS} kunda ishlatilganlari "
-                          f"({len(cache) - len(old_c)} ta) saqlanadi.",
+        items.append(item(G, _("docker.cache.title", n=len(old_c), days=RECENT_DAYS),
+                          _("docker.cache.desc", days=RECENT_DAYS, kept=len(cache) - len(old_c)),
                           sum(parse_docker_size(c.get("Size")) for c in old_c), SAFE,
                           cmd("docker", "builder", "prune", "-a", "-f", "--filter", f"until={hours}")))
 
@@ -238,74 +241,50 @@ def scan_docker():
         v["_used"] = days_since(*map(parse_time, info.get(v["Name"], [])))
     tiny = [v for v in vols if parse_docker_size(v.get("Size")) < 1e6 and (v["_used"] or 0) >= RECENT_DAYS]
     if tiny:
-        items.append(item(G, f"Bo'sh/kichik ishlatilmagan volume'lar ({len(tiny)} ta)",
-                          f"Hajmi 1 MB dan kichik, hech bir konteynerga ulanmagan, {RECENT_DAYS}+ kunlik.",
+        items.append(item(G, _("docker.tinyvol.title", n=len(tiny)), _("docker.tinyvol.desc", days=RECENT_DAYS),
                           sum(parse_docker_size(v.get("Size")) for v in tiny), SAFE,
                           cmd("docker", "volume", "rm", *[v["Name"] for v in tiny])))
     for v in vols:
         if v in tiny or (parse_docker_size(v.get("Size")) < 1e6 and (v["_used"] or 0) < RECENT_DAYS):
             continue
         anon = "com.docker.volume.anonymous" in (v.get("Labels") or "")
-        items.append(item(G, f"Volume: {v['Name'][:40]}",
-                          ("Anonim volume, hech bir konteynerga ulanmagan." if anon else
-                           "Nomli volume — ichida ma'lumotlar bazasi bo'lishi mumkin! Ishonchingiz komil bo'lsa o'chiring."),
+        items.append(item(G, _("docker.vol.title", name=v["Name"][:40]),
+                          _("docker.vol.anon") if anon else _("docker.vol.named"),
                           parse_docker_size(v.get("Size")), REVIEW if anon else CAREFUL,
                           cmd("docker", "volume", "rm", v["Name"]), used=v["_used"], track_recent=True))
     return items
 
 
-KNOWN_CACHE = {
-    "google-chrome": "Chrome brauzer keshi (Chrome yopiq bo'lsa yaxshi)",
-    "yarn": "Yarn paketlar keshi — kerak bo'lsa qayta yuklanadi",
-    "ms-playwright": "Playwright brauzerlari — testlar uchun qayta yuklanadi",
-    "ms-playwright-go": "Playwright-go brauzerlari",
-    "pip": "pip keshi",
-    "typescript": "TypeScript tiplari keshi",
-    "tracker3": "GNOME fayl indeksi — o'zi qayta tuziladi",
-    "mesa_shader_cache": "GPU shader keshi",
-    "prisma": "Prisma engine keshi",
-    "node-gyp": "node-gyp header'lari",
-    "JetBrains": "JetBrains IDE keshi/indekslari",
-    "thumbnails": "Rasm kichik nusxalari",
-}
-
 APP_PROCS = {"google-chrome": ("chrome",), "Cursor": ("cursor", "Cursor"), "Code": ("code",),
              "Code - Insiders": ("code-insiders",), "TelegramDesktop": ("Telegram", "telegram-desktop")}
 
 
-def warn_for(name):
+def app_running(name):
+    """Dastur ochiq bo'lsa, uning nomini qaytaradi (ogohlantirish uchun)."""
     procs = APP_PROCS.get(name)
-    if procs and running(*procs):
-        return f"{name} hozir ishlayapti — o'chirishdan oldin yopib qo'ying"
-    return None
+    return name if procs and running(*procs) else None
 
 
 def scan_user_paths():
-    """(group, title, desc, path, safety, contents_only)"""
+    """(gkey, title, desc, path, safety, contents_only, app)"""
     cands = []
     cache = HOME / ".cache"
     if cache.is_dir():
         for p in cache.iterdir():
             if p.is_dir() and not p.is_symlink():
-                cands.append(("Kesh (~/.cache)", p.name, KNOWN_CACHE.get(p.name, "Dastur keshi — odatda qayta yaratiladi"),
-                              p, SAFE, False, APP_PROCS.get(p.name) and warn_for(p.name)))
+                desc = _(f"cache.{p.name}") if f"cache.{p.name}" in T else _("cache.generic")
+                cands.append(("cache", p.name, desc, p, SAFE, False, app_running(p.name)))
 
     dev = [
-        (".npm/_cacache", "npm keshi", "npm paketlar keshi — kerak bo'lsa qayta yuklanadi"),
-        (".gradle/caches", "Gradle keshi", "Gradle kutubxonalari — keyingi build'da qayta yuklanadi"),
-        (".gradle/daemon", "Gradle daemon loglari", "Eski daemon loglari va holati"),
-        (".gradle/wrapper/dists", "Gradle wrapper versiyalari", "Yuklangan Gradle distributivlari"),
-        (".m2/repository", "Maven repo", "Maven kutubxonalari keshi"),
-        (".cargo/registry", "Cargo registry", "Rust crate keshi"),
-        ("go/pkg/mod", "Go modullari", "Go modul keshi"),
-        (".nvm/.cache", "nvm keshi", "Node yuklamalari keshi"),
-        (".local/share/pnpm/store", "pnpm store", "pnpm paketlar ombori"),
-        (".bun/install/cache", "bun keshi", "bun paketlar keshi"),
+        (".npm/_cacache", "dev.npm"), (".gradle/caches", "dev.gradle"), (".gradle/daemon", "dev.gradled"),
+        (".gradle/wrapper/dists", "dev.gradlew"), (".m2/repository", "dev.m2"), (".cargo/registry", "dev.cargo"),
+        ("go/pkg/mod", "dev.go"), (".nvm/.cache", "dev.nvm"), (".local/share/pnpm/store", "dev.pnpm"),
+        (".bun/install/cache", "dev.bun"),
     ]
-    for rel, title, desc in dev:
+    for rel, key in dev:
         p = HOME / rel
         if p.is_dir():
-            cands.append(("Dasturlash keshlari", title, desc, p, SAFE, False, None))
+            cands.append(("devcache", _(key), _(f"{key}.desc"), p, SAFE, False, None))
 
     cfg = HOME / ".config"
     if cfg.is_dir():
@@ -316,77 +295,76 @@ def scan_user_paths():
                         "Service Worker/CacheStorage", "logs", "Crashpad"):
                 p = app / sub
                 if p.is_dir():
-                    cands.append(("Dasturlar keshi", f"{app.name} → {sub}", "Electron/VS Code tipidagi dastur keshi",
-                                  p, SAFE, False, warn_for(app.name)))
+                    cands.append(("appcache", f"{app.name} → {sub}", _("app.electron.desc"),
+                                  p, SAFE, False, app_running(app.name)))
 
     chrome = cfg / "google-chrome"
     if chrome.is_dir():
         p = chrome / "OptGuideOnDeviceModel"
         if p.is_dir():
-            cands.append(("Dasturlar keshi", "Chrome on-device AI modeli (Gemini Nano)",
-                          "Chrome o'zi yuklagan AI model. chrome://flags da 'optimization-guide-on-device-model' ni "
-                          "o'chirmasangiz qayta yuklab olishi mumkin.", p, REVIEW, False, warn_for("google-chrome")))
+            cands.append(("appcache", _("app.chrome_model"), _("app.chrome_model.desc"), p, REVIEW, False,
+                          app_running("google-chrome")))
         for prof in chrome.iterdir():
             for sub in ("Service Worker/CacheStorage", "Code Cache", "GPUCache"):
                 p = prof / sub
                 if prof.is_dir() and p.is_dir():
-                    cands.append(("Dasturlar keshi", f"Chrome [{prof.name}] → {sub}", "Sayt keshlari, qayta yaratiladi",
-                                  p, SAFE, False, warn_for("google-chrome")))
+                    cands.append(("appcache", f"Chrome [{prof.name}] → {sub}", _("app.chrome_site.desc"),
+                                  p, SAFE, False, app_running("google-chrome")))
 
     p = cfg / "Cursor" / "snapshots"
     if p.is_dir():
-        cands.append(("Dasturlar keshi", "Cursor agent snapshot'lari",
-                      "Cursor AI agent o'zgarishlarining eski nusxalari (checkpoint). Eski chatlarda 'restore' ishlamay qoladi.",
-                      p, REVIEW, False, warn_for("Cursor")))
+        cands.append(("appcache", _("app.cursor_snap"), _("app.cursor_snap.desc"), p, REVIEW, False,
+                      app_running("Cursor")))
 
     p = HOME / ".local/share/TelegramDesktop/tdata/user_data"
     if p.is_dir():
-        cands.append(("Dasturlar keshi", "Telegram media keshi",
-                      "Ko'rilgan rasm/video keshi. Xabarlar o'chmaydi, media qayta yuklanadi.",
-                      p, REVIEW, False, warn_for("TelegramDesktop")))
+        cands.append(("appcache", _("app.telegram"), _("app.telegram.desc"), p, REVIEW, False,
+                      app_running("TelegramDesktop")))
 
     snapdir = HOME / "snap"
     if snapdir.is_dir():
         for p in snapdir.glob("*/*/.cache"):
             if p.is_dir() and not p.is_symlink():
-                cands.append(("Kesh (~/.cache)", f"snap: {p.parts[-3]} keshi", "Snap dastur keshi", p, SAFE, False, None))
+                cands.append(("cache", _("app.snap_cache", name=p.parts[-3]), _("app.snap_cache.desc"),
+                              p, SAFE, False, None))
 
     trash = HOME / ".local/share/Trash"
     if trash.is_dir():
-        cands.append(("Tizim", "Savatcha (Trash)", "O'chirilgan fayllar savatchasi", trash, SAFE, True, None))
+        cands.append(("junk", _("trash"), _("trash.desc"), trash, SAFE, True, None))
 
     items = []
     with ThreadPoolExecutor(8) as ex:
         sizes = list(ex.map(lambda c: du(c[3]), cands))
-    for (g, title, desc, p, safety, contents, warn), size in zip(cands, sizes):
+    for (g, title, desc, p, safety, contents, app), size in zip(cands, sizes):
         if size >= MIN_SIZE:
-            items.append(item(g, title, desc, size, safety, rm_path(p, contents), path=p, age=age_days(p), warn=warn))
+            items.append(item(g, title, desc, size, safety, rm_path(p, contents), path=p, age=age_days(p), app=app))
     return items
 
 
+# nom -> (marker, tarjima kaliti). marker: papka ichida yoki (..) yonida bo'lishi kerak bo'lgan fayl
 ARTIFACTS = {
-    "node_modules": (None, "npm/yarn paketlari — `npm install` bilan qayta tiklanadi"),
-    ".next": (None, "Next.js build keshi — `next build`/`dev` qayta yaratadi"),
-    ".nuxt": (None, "Nuxt build keshi"),
-    ".turbo": (None, "Turborepo keshi"),
-    ".angular": (None, "Angular keshi"),
-    ".parcel-cache": (None, "Parcel keshi"),
-    ".venv": ("pyvenv.cfg", "Python virtual muhit — `pip install -r requirements.txt` bilan tiklanadi"),
-    "venv": ("pyvenv.cfg", "Python virtual muhit — `pip install -r requirements.txt` bilan tiklanadi"),
-    "target": ("..Cargo.toml|..pom.xml", "Rust/Maven build natijasi — qayta build qilinadi"),
-    "build": ("..build.gradle|..build.gradle.kts", "Gradle build natijasi — qayta build qilinadi"),
+    "node_modules": (None, "art.node_modules"),
+    ".next": (None, "art..next"),
+    ".nuxt": (None, "art..nuxt"),
+    ".turbo": (None, "art..turbo"),
+    ".angular": (None, "art..angular"),
+    ".parcel-cache": (None, "art..parcel-cache"),
+    ".venv": ("pyvenv.cfg", "art.venv"),
+    "venv": ("pyvenv.cfg", "art.venv"),
+    "target": ("..Cargo.toml|..pom.xml", "art.target"),
+    "build": ("..build.gradle|..build.gradle.kts", "art.build"),
 }
 # Uy papkasining yuqori darajasida aylanilmaydigan papkalar (keshlar boshqa skanerda)
 SKIP_DIRS = {"snap", "go", "Android"}  # Android SDK fayllari emulator uchun kerak
 
 JUNK = [
-    ("Chala yuklangan fayllar", SAFE, "Brauzer yuklashi tugallanmagan — ochilmaydi, keraksiz",
+    ("junk.partial", SAFE, None,
      re.compile(r".*\.(crdownload|part|partial|download)$", re.I)),
-    ("Log fayllar", REVIEW, "Dasturlar/npm/Java crash loglari — odatda keraksiz",
+    ("junk.logs", REVIEW, None,
      re.compile(r"(.*\.log(\.\d+)?|npm-debug\.log.*|yarn-error\.log|hs_err_pid\d+\.log|replay_pid\d+\.log)$", re.I)),
-    ("Vaqtinchalik va zaxira fayllar", REVIEW, "Muharrir zaxiralari, .tmp, .swp, Thumbs.db, .DS_Store",
+    ("junk.temp", REVIEW, None,
      re.compile(r"(.*\.(tmp|temp|swp|swo|bak|old|orig)|.*~|\.DS_Store|Thumbs\.db|desktop\.ini)$", re.I)),
-    ("Core dump fayllar", SAFE, "Dastur yiqilganda qolgan xotira nusxalari",
+    ("junk.core", SAFE, None,
      re.compile(r"core(\.\d+)?$")),
 ]
 INSTALLER = re.compile(r".*\.(deb|rpm|appimage|apk|aab|iso|exe|msi|dmg|snap|flatpakref)$", re.I)
@@ -515,7 +493,7 @@ def repo_of(p):
 
 def file_warn(p):
     repo = repo_of(p)
-    return f"{repo.name} git loyihasi ichida — o'chirsangiz loyiha buzilishi mumkin" if repo else None
+    return _("warn.git", repo=repo.name) if repo else None
 
 
 def scan_home():
@@ -529,8 +507,8 @@ def scan_home():
         if size < MIN_SIZE:
             continue
         age = project_age(p.parent)
-        items.append(item("Loyihalardagi build/paket papkalari", f"{p.parent.name}/{p.name}",
-                          ARTIFACTS[p.name][1] + " · vaqt loyiha fayllari bo'yicha",
+        items.append(item("projects", f"{p.parent.name}/{p.name}",
+                          f"{_(ARTIFACTS[p.name][1])} · {_('art.age_note')}",
                           size, SAFE if (age or 0) > 60 else REVIEW,
                           rm_path(p), path=p, age=age, track_recent=True))
 
@@ -542,7 +520,7 @@ def scan_home():
         for p, st in g[1:]:
             taken.add(p)
             warn = file_warn(p)
-            items.append(item("Dublikat fayllar", p.name, f"Aynan bir xil nusxa saqlanadi: {keep}",
+            items.append(item("dupes", p.name, _("dupe.desc", keep=keep),
                               st.st_size, CAREFUL if warn else REVIEW, rm_files([p]), path=p, warn=warn,
                               age=days_since(st.st_mtime), used=days_since(st.st_mtime, st.st_atime),
                               track_recent=True))
@@ -553,30 +531,28 @@ def scan_home():
             continue
         used = days_since(st.st_mtime, st.st_atime)
         if INSTALLER.fullmatch(p.name) and st.st_size >= MIN_SIZE:
-            items.append(item("O'rnatish fayllari (.deb, .apk, .iso…)", p.name,
-                              "O'rnatib bo'lingan bo'lsa odatda keraksiz", st.st_size, REVIEW, rm_files([p]),
+            items.append(item("installers", p.name, _("installer.desc"), st.st_size, REVIEW, rm_files([p]),
                               path=p, warn=file_warn(p), age=days_since(st.st_mtime), used=used, track_recent=True))
         elif st.st_size >= BIG_FILE:
-            items.append(item(f"Katta fayllar ({BIG_FILE >> 20} MB+)", p.name,
-                              "Katta fayl — kerakligini o'zingiz tekshiring", st.st_size, CAREFUL, rm_files([p]),
+            items.append(item("big", p.name, _("big.desc"), st.st_size, CAREFUL, rm_files([p]),
                               path=p, warn=file_warn(p), age=days_since(st.st_mtime), used=used, track_recent=True))
 
     # --- keraksiz fayllar (turlari bo'yicha jamlangan)
-    for (title, safety, desc, _), lst in junk.items():
+    for (key, safety, _unused, _rx), lst in junk.items():
         old = [(p, st) for p, st in lst if (days_since(st.st_mtime) or 0) >= 1]
-        size = sum(st.st_size for _, st in old)
+        size = sum(st.st_size for _p, st in old)
         if size >= 100 * 1024:
             old.sort(key=lambda x: -x[1].st_size)
-            paths = [str(p) for p, _ in old]
-            items.append(item("Keraksiz fayllar", f"{title} ({len(old)} ta)", desc, size, safety,
+            paths = [str(p) for p, _st in old]
+            items.append(item("junk", _(key, n=len(old)), _(f"{key}.desc"), size, safety,
                               rm_files(paths), paths=paths[:200]))
     return items
 
 
 def scan_system():
-    G = "Tizim (parol so'raladi)"
+    G = "system"
     items = []
-    rc, out, _ = run(["snap", "list", "--all"])
+    rc, out, _err = run(["snap", "list", "--all"])
     if rc == 0:
         for line in out.splitlines()[1:]:
             parts = line.split()
@@ -584,19 +560,18 @@ def scan_system():
                 name, rev = parts[0], parts[2]
                 f = Path(f"/var/lib/snapd/snaps/{name}_{rev}.snap")
                 size = f.stat().st_size if f.exists() else 0
-                items.append(item(G, f"Eski snap versiyasi: {name} (rev {rev})",
-                                  "Snap yangilanganda eski versiyani saqlab qoladi. Hozirgi versiya ishlayveradi.",
+                items.append(item(G, _("sys.snap", name=name, rev=rev), _("sys.snap.desc"),
                                   size, SAFE, root_cmd("snap", "remove", name, f"--revision={rev}")))
     size = du("/var/cache/apt/archives")
     if size >= MIN_SIZE:
-        items.append(item(G, "APT paketlar keshi", "Yuklab olingan .deb fayllar — o'rnatilganlarga ta'sir qilmaydi",
+        items.append(item(G, _("sys.apt"), _("sys.apt.desc"),
                           size, SAFE, root_cmd("apt-get", "clean")))
-    rc, out, _ = run(["journalctl", "--disk-usage"])
+    rc, out, _err = run(["journalctl", "--disk-usage"])
     m = re.search(r"([\d.]+)([KMGT])", out)
     if m:
         size = int(float(m.group(1)) * {"K": 1 << 10, "M": 1 << 20, "G": 1 << 30, "T": 1 << 40}[m.group(2)])
         if size > 150 << 20:
-            items.append(item(G, "Tizim jurnallari (journal)", "Eski loglar, oxirgi 100 MB qoldiriladi",
+            items.append(item(G, _("sys.journal"), _("sys.journal.desc"),
                               size - (100 << 20), SAFE, root_cmd("journalctl", "--vacuum-size=100M")))
     return items
 
@@ -613,7 +588,7 @@ def full_scan():
                     items += f.result()
                 except Exception as e:  # bitta skaner yiqilsa, qolganlari ishlayversin
                     errors.append(repr(e))
-        rc, out, _ = run(["df", "-B1", "--output=size,avail", str(HOME)])
+        rc, out, _err = run(["df", "-B1", "--output=size,avail", str(HOME)])
         total, avail = (int(x) for x in out.splitlines()[1].split()) if rc == 0 else (0, 0)
         return {"items": items, "errors": errors, "took": round(time.time() - t, 1), "recent_days": RECENT_DAYS,
                 "disk": {"total": total, "avail": avail}}
@@ -625,7 +600,7 @@ def clean(ids):
     for iid in ids:
         a = ACTIONS.get(iid)
         if a is None:
-            results.append({"id": iid, "ok": False, "msg": "Noma'lum element — qayta skanerlang"})
+            results.append({"id": iid, "ok": False, "msg": _("res.unknown")})
         elif a["kind"] == "py":
             try:
                 results.append({"id": iid, "ok": True, "msg": a["fn"]()})
@@ -633,16 +608,16 @@ def clean(ids):
                 results.append({"id": iid, "ok": False, "msg": str(e)})
         elif a["kind"] == "cmd":
             rc, out, err = run(a["cmd"], timeout=900)
-            results.append({"id": iid, "ok": rc == 0, "msg": (err or out).strip()[-300:] or "bajarildi"})
+            results.append({"id": iid, "ok": rc == 0, "msg": (err or out).strip()[-300:] or _("res.done")})
         else:
             root_batch.append((iid, a["cmd"]))
     if root_batch:
         # Bitta parol so'rovi bilan barcha root buyruqlarini bajaramiz
         script = "\n".join(f"{shlex.join(c)} && echo 'OK {i}' || echo 'FAIL {i}'" for i, c in root_batch)
         rc, out, err = run(["pkexec", "sh", "-c", script], timeout=1800)
-        for i, _ in root_batch:
+        for i, _cmd in root_batch:
             ok = f"OK {i}" in out
-            results.append({"id": i, "ok": ok, "msg": "bajarildi" if ok else (err.strip()[-300:] or "bekor qilindi")})
+            results.append({"id": i, "ok": ok, "msg": _("res.done") if ok else (err.strip()[-300:] or _("res.cancelled"))})
     return results
 
 
@@ -661,9 +636,13 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(data)
 
     def do_GET(self):
-        if self.path == "/":
-            self.send(200, PAGE.replace("__TOKEN__", TOKEN), "text/html; charset=utf-8")
-        elif self.path == "/api/scan":
+        url = urlparse(self.path)
+        lang = parse_qs(url.query).get("lang", [None])[0]
+        if lang in LANGS:
+            set_lang(lang)
+        if url.path == "/":
+            self.send(200, render_page(), "text/html; charset=utf-8")
+        elif url.path == "/api/scan":
             self.send(200, json.dumps(full_scan()))
         else:
             self.send(404, "{}")
@@ -675,127 +654,140 @@ class Handler(BaseHTTPRequestHandler):
         self.send(200, json.dumps({"results": clean(body.get("ids", []))}))
 
 
+def render_page():
+    """{{kalit}} → tarjima (HTML-escape bilan); JS uchun lug'at __I18N__ ga joylanadi."""
+    import html
+    lang = get_lang()
+    page = re.sub(r"\{\{([\w.]+)\}\}", lambda m: html.escape(_(m.group(1))), PAGE)
+    opts = "".join(f'<option value="{k}"{" selected" if k == lang else ""}>{v}</option>' for k, v in LANGS.items())
+    strings = {**table("ui."), **table("web.")}
+    return (page.replace("__TOKEN__", TOKEN).replace("__LANG__", lang).replace("__LANGOPTS__", opts)
+            .replace("__I18N__", json.dumps(strings, ensure_ascii=False).replace("</", "<\\/")))
+
+
 PAGE = r"""<!doctype html>
-<html lang="uz"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Storage Cleaner</title>
+<html lang="__LANG__"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>DevSweep</title>
 <style>
 :root{--bg:#f6f7f9;--card:#fff;--fg:#1c2230;--mut:#6b7385;--line:#e4e7ec;--acc:#2f6fed;--safe:#1f9d55;--rev:#c98a00;--car:#d64545;--sel:#eef3ff}
 @media (prefers-color-scheme:dark){:root{--bg:#0f1218;--card:#171b23;--fg:#e6e9ef;--mut:#8b93a5;--line:#262c38;--acc:#5b8cff;--safe:#3ec27a;--rev:#e3a92b;--car:#f06565;--sel:#1b2436}}
-*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--fg);font:14px/1.45 system-ui,-apple-system,"Segoe UI",sans-serif}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--fg);font:15px/1.45 system-ui,-apple-system,"Segoe UI",sans-serif}
 header{padding:20px 16px 8px;max-width:1000px;margin:auto}
-h1{margin:0 0 4px;font-size:22px}.mut{color:var(--mut)}
+h1{margin:0 0 4px;font-size:22px;display:flex;align-items:center;gap:12px}h1 select{margin-left:auto}.mut{color:var(--mut)}
 .bar{height:10px;background:var(--line);border-radius:6px;overflow:hidden;margin:10px 0 4px}.bar>i{display:block;height:100%;background:var(--acc)}
 .tools{display:flex;gap:8px;flex-wrap:wrap;margin:12px 0}
-button{font:inherit;border:1px solid var(--line);background:var(--card);color:var(--fg);padding:7px 12px;border-radius:8px;cursor:pointer}
+button,select{font:inherit;border:1px solid var(--line);background:var(--card);color:var(--fg);padding:7px 12px;border-radius:8px;cursor:pointer}
+select{font-size:14px;padding:5px 8px}
 button.pri{background:var(--acc);border-color:var(--acc);color:#fff}button.dan{background:var(--car);border-color:var(--car);color:#fff}
 button:disabled{opacity:.5;cursor:default}
 main{max-width:1000px;margin:auto;padding:0 16px 120px}
 .grp{background:var(--card);border:1px solid var(--line);border-radius:12px;margin:12px 0;overflow:hidden}
 .gh{display:flex;align-items:center;gap:10px;padding:12px 14px;cursor:pointer;user-select:none}
-.gh h2{font-size:15px;margin:0;flex:1}.gh .sz{font-weight:600}
+.gh h2{font-size:16px;margin:0;flex:1}.gh .sz{font-weight:600}
+.gh .arr{transition:transform .2s;color:var(--mut)}.grp:not(.collapsed) .arr{transform:rotate(180deg)}
 .row{display:grid;grid-template-columns:22px 1fr auto;gap:10px;padding:10px 14px;border-top:1px solid var(--line);align-items:start}
 .row.on{background:var(--sel)}.row{cursor:pointer}
-.t{font-weight:500;word-break:break-word}.d{font-size:12.5px;color:var(--mut)}.p{font:11.5px ui-monospace,monospace;color:var(--mut);word-break:break-all}
-.w{font-size:12px;color:var(--car)}
+.t{font-weight:500;word-break:break-word}.d{font-size:13.5px;color:var(--mut)}.p{font:12.5px ui-monospace,monospace;color:var(--mut);word-break:break-all}
+.w{font-size:13px;color:var(--car)}
 .sz{white-space:nowrap;text-align:right}
-.b{font-size:11px;padding:1px 7px;border-radius:10px;border:1px solid;margin-left:6px;white-space:nowrap}
+.b{font-size:11.5px;padding:1px 7px;border-radius:10px;border:1px solid;margin-left:6px;white-space:nowrap}
 .b.safe{color:var(--safe)}.b.review{color:var(--rev)}.b.careful{color:var(--car)}
 input[type=checkbox]{width:16px;height:16px;margin-top:2px;accent-color:var(--acc)}
 footer{position:fixed;left:0;right:0;bottom:0;background:var(--card);border-top:1px solid var(--line);padding:12px 16px}
 footer .in{max-width:1000px;margin:auto;display:flex;align-items:center;gap:12px;flex-wrap:wrap}footer .in>div{flex:1}
 .hide,.norecent .row.recent{display:none}.b.recent{color:var(--acc)}
-details{font-size:12px;color:var(--mut)}details div{font:11.5px ui-monospace,monospace;word-break:break-all}.collapsed .row{display:none}
+details{font-size:13px;color:var(--mut)}details div{font:12.5px ui-monospace,monospace;word-break:break-all}.collapsed .row{display:none}
 dialog{border:1px solid var(--line);border-radius:12px;background:var(--card);color:var(--fg);max-width:640px;width:calc(100% - 32px)}
 dialog ul{max-height:45vh;overflow:auto;padding-left:18px}.ok{color:var(--safe)}.err{color:var(--car)}
 .spin{padding:60px 0;text-align:center}
 </style></head><body>
 <header>
- <h1>🧹 Storage Cleaner</h1>
- <div class="mut" id="disk">Disk ma'lumoti yuklanmoqda…</div>
+ <h1>🧹 DevSweep <select aria-label="{{ui.menu.lang}}" onchange="location.href='/?lang='+this.value">__LANGOPTS__</select></h1>
+ <div class="mut" id="disk">{{web.disk_loading}}</div>
  <div class="bar"><i id="used" style="width:0"></i></div>
  <div class="tools">
-  <button onclick="scan()">🔄 Qayta skanerlash</button>
-  <button onclick="pick('safe')">✅ Xavfsizlarini tanlash</button>
-  <button onclick="pick(null)">Tanlovni tozalash</button>
+  <button onclick="scan()">{{web.rescan}}</button>
+  <button onclick="pick('safe')">{{web.pick_safe}}</button>
+  <button onclick="pick(null)">{{ui.menu.pick_none}}</button>
   <label style="align-self:center"><input type="checkbox" id="showrec" onchange="toggleRecent(this.checked)">
-   Yaqinda ishlatilganlarni ham ko'rsatish (<span id="reccnt">0</span>)</label>
+   {{ui.recent.show}} (<span id="reccnt">0</span>)</label>
   <span class="mut" style="align-self:center">
-   <span class="b safe">xavfsiz</span> qayta tiklanadi ·
-   <span class="b review">ko'rib chiqing</span> ·
-   <span class="b careful">ehtiyot bo'ling</span> ma'lumot yo'qolishi mumkin</span>
+   <span class="b safe">{{ui.label.safe}}</span> {{web.legend_safe}} ·
+   <span class="b review">{{ui.label.review}}</span> ·
+   <span class="b careful">{{ui.label.careful}}</span> {{web.legend_careful}}</span>
  </div>
 </header>
-<main id="main" class="norecent"><div class="spin">Skanerlanmoqda… (1-2 daqiqa olishi mumkin)</div></main>
-<footer><div class="in"><div><b id="selsz">0 B</b> <span class="mut" id="selcnt">tanlanmagan</span></div>
-<button class="dan" id="go" disabled onclick="confirmClean()">🗑 Tanlanganlarni o'chirish</button></div></footer>
+<main id="main" class="norecent"><div class="spin">{{ui.loading}} {{ui.loading.desc}}</div></main>
+<footer><div class="in"><div><b id="selsz">0 B</b> <span class="mut" id="selcnt">{{ui.sel.none}}</span></div>
+<button class="dan" id="go" disabled onclick="confirmClean()">🗑 {{ui.delete_selected}}</button></div></footer>
 <dialog id="dlg"></dialog>
 <script>
-const TOKEN="__TOKEN__";let ITEMS=[],RECENT_DAYS=14;const sel=new Set();
+const TOKEN="__TOKEN__",L=__I18N__;let ITEMS=[],RECENT_DAYS=14;const sel=new Set();
+const t=(k,v={})=>((v.n===1&&L[k+'.one'])||L[k]||k).replace(/\{(\w+)\}/g,(_,x)=>v[x]??'');
 const fmt=b=>{const u=['B','KB','MB','GB','TB'];let i=0;while(b>=1024&&i<4){b/=1024;i++}return (i?b.toFixed(1):b)+' '+u[i]};
-const esc=s=>String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
-const LBL={safe:'xavfsiz',review:"ko'rib chiqing",careful:'ehtiyot bo\'ling'};
+const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 async function scan(){
- document.getElementById('main').innerHTML='<div class="spin">Skanerlanmoqda… (1-2 daqiqa olishi mumkin)</div>';
+ document.getElementById('main').innerHTML=`<div class="spin">${esc(t('ui.loading'))} ${esc(t('ui.loading.desc'))}</div>`;
  sel.clear();upd();
  const r=await fetch('/api/scan');const d=await r.json();ITEMS=d.items;RECENT_DAYS=d.recent_days;
- document.getElementById('reccnt').textContent=`${ITEMS.filter(i=>i.recent).length} ta, oxirgi ${RECENT_DAYS} kun`;
+ document.getElementById('reccnt').textContent=t('web.recent_info',{n:ITEMS.filter(i=>i.recent).length,days:RECENT_DAYS});
  const {total,avail}=d.disk;
- document.getElementById('disk').textContent=`Disk: ${fmt(total-avail)} ishlatilgan / ${fmt(total)} · bo'sh: ${fmt(avail)} · topilgan: ${fmt(ITEMS.reduce((a,i)=>a+i.size,0))} (${ITEMS.length} ta, ${d.took}s)`;
+ document.getElementById('disk').textContent=t('web.disk',{used:fmt(total-avail),total:fmt(total),free:fmt(avail),found:fmt(ITEMS.filter(i=>!i.recent).reduce((a,i)=>a+i.size,0)),n:ITEMS.length,took:d.took});
  document.getElementById('used').style.width=(100*(total-avail)/total)+'%';
  render(d.errors);
 }
 function render(errors){
- const groups={};ITEMS.forEach(i=>(groups[i.group]??=[]).push(i));
+ const groups={};ITEMS.forEach(i=>(groups[i.gkey]??=[]).push(i));
  const show=document.getElementById('showrec').checked,vis=l=>l.filter(i=>show||!i.recent);
  const order=Object.entries(groups).map(([g,l])=>[g,l.sort((a,b)=>b.size-a.size),vis(l).reduce((a,i)=>a+i.size,0),vis(l).length]).filter(x=>x[3]).sort((a,b)=>b[2]-a[2]);
- let h=errors?.length?`<p class="err">Ba'zi skanerlar xato berdi: ${esc(errors.join('; '))}</p>`:'';
+ let h=errors?.length?`<p class="err">${esc(t('web.errors',{e:errors.join('; ')}))}</p>`:'';
  for(const [g,l,tot,n] of order){
   h+=`<section class="grp collapsed"><div class="gh" onclick="this.parentNode.classList.toggle('collapsed')">
-  <input type="checkbox" onclick="event.stopPropagation();grp(this,'${esc(g)}')"><h2>▸ ${esc(g)} <span class="mut">(${n})</span></h2><span class="sz">${fmt(tot)}</span></div>`;
+  <input type="checkbox" title="${esc(t('ui.tip.select_all'))}" onclick="event.stopPropagation();grp(this,'${g}')"><h2>${esc(l[0].group)} <span class="mut">(${n})</span></h2><span class="sz">${fmt(tot)}</span><span class="arr">▾</span></div>`;
   for(const i of l){
    h+=`<div class="row${i.recent?' recent':''}" id="r${i.id}" onclick="rowClick(event,'${i.id}')"><input type="checkbox" data-id="${i.id}" onchange="tog('${i.id}',this.checked)">
-   <div><div class="t">${esc(i.title)}<span class="b ${i.safety}">${LBL[i.safety]}</span>${i.recent?'<span class="b recent">yaqinda ishlatilgan</span>':''}</div>
-   <div class="d">${esc(i.desc)}${when(i)}</div>
-   ${i.path?`<div class="p">${esc(i.path)}</div>`:''}${i.paths?`<details><summary>Fayllar ro'yxati</summary>${i.paths.map(p=>`<div>${esc(p)}</div>`).join('')}</details>`:''}${i.warn?`<div class="w">⚠ ${esc(i.warn)}</div>`:''}</div><div class="sz">${fmt(i.size)}</div></div>`;
+   <div><div class="t">${esc(i.title)}<span class="b ${i.safety}">${esc(t('ui.label.'+i.safety))}</span>${i.recent?`<span class="b recent">${esc(t('ui.label.recent'))}</span>`:''}</div>
+   <div class="d">${esc(i.desc)}${esc(when(i))}</div>
+   ${i.path?`<div class="p">${esc(i.path)}</div>`:''}${i.paths?`<details><summary>${esc(t('ui.tip.files'))}</summary>${i.paths.map(p=>`<div>${esc(p)}</div>`).join('')}</details>`:''}${i.warn?`<div class="w">⚠ ${esc(i.warn)}</div>`:''}</div><div class="sz">${fmt(i.size)}</div></div>`;
   }
   h+='</section>';
  }
- document.getElementById('main').innerHTML=h||'<div class="spin">Hech narsa topilmadi 🎉</div>';
+ document.getElementById('main').innerHTML=h||`<div class="spin">${esc(t('ui.nothing'))} 🎉</div>`;
 }
-const ago=d=>d===0?'bugun':d+' kun avval';
-function when(i){const p=[];if(i.used!=null)p.push(`oxirgi ishlatilgan: ${ago(i.used)}`);if(i.age!=null&&i.age!==i.used)p.push(`o'zgargan: ${ago(i.age)}`);return p.length?' · '+p.join(' · '):''}
+const ago=d=>d===0?t('ui.ago.today'):t('ui.ago.days',{n:d});
+function when(i){const p=[];if(i.used!=null)p.push(t('ui.when.used',{ago:ago(i.used)}));if(i.age!=null&&i.age!==i.used)p.push(t('ui.when.modified',{ago:ago(i.age)}));return p.length?' · '+p.join(' · '):''}
 function toggleRecent(on){if(!on)ITEMS.filter(i=>i.recent).forEach(i=>sel.delete(i.id));render();ITEMS.forEach(i=>{const c=document.querySelector(`[data-id="${i.id}"]`);if(c&&sel.has(i.id)){c.checked=true;c.closest('.row').classList.add('on')}});upd()}
 function rowClick(e,id){if(e.target.closest('details,input'))return;const c=document.querySelector(`[data-id="${id}"]`);setCb(id,!c.checked)}
 function tog(id,on){on?sel.add(id):sel.delete(id);document.getElementById('r'+id).classList.toggle('on',on);upd()}
 const shown=i=>document.getElementById('showrec').checked||!i.recent;
-function grp(cb,g){ITEMS.filter(i=>i.group===g&&shown(i)&&!(cb.checked&&i.recent)).forEach(i=>setCb(i.id,cb.checked))}
+function grp(cb,g){ITEMS.filter(i=>i.gkey===g&&shown(i)&&!(cb.checked&&i.recent)).forEach(i=>setCb(i.id,cb.checked))}
 function setCb(id,on){const c=document.querySelector(`[data-id="${id}"]`);c.checked=on;tog(id,on)}
 function pick(s){ITEMS.forEach(i=>{if(shown(i))setCb(i.id,s!==null&&i.safety===s&&!i.recent);else sel.delete(i.id)});upd()}
 function upd(){const l=ITEMS.filter(i=>sel.has(i.id));
  document.getElementById('selsz').textContent=fmt(l.reduce((a,i)=>a+i.size,0));
- document.getElementById('selcnt').textContent=l.length?`${l.length} ta tanlandi`:'tanlanmagan';
+ document.getElementById('selcnt').textContent=l.length?t('ui.sel.count',{n:l.length}):t('ui.sel.none');
  document.getElementById('go').disabled=!l.length}
 function confirmClean(){
  const l=ITEMS.filter(i=>sel.has(i.id)),dlg=document.getElementById('dlg');
- const risky=l.filter(i=>i.safety==='careful').length,rec=l.filter(i=>i.recent).length,root=l.some(i=>i.group.includes('parol'));
- dlg.innerHTML=`<h3>${l.length} ta element o'chirilsinmi? (${fmt(l.reduce((a,i)=>a+i.size,0))})</h3>
- ${risky?`<p class="err">⚠ ${risky} ta "ehtiyot bo'ling" belgili element bor — ular qaytarib bo'lmaydi!</p>`:''}
- ${rec?`<p class="err">⚠ ${rec} tasi oxirgi ${RECENT_DAYS} kunda ishlatilgan!</p>`:''}
- ${root?'<p class="mut">Tizim elementlari uchun parol oynasi chiqadi.</p>':''}
+ const risky=l.filter(i=>i.safety==='careful').length,rec=l.filter(i=>i.recent).length,root=l.some(i=>i.gkey==='system');
+ dlg.innerHTML=`<h3>${esc(t('ui.confirm.heading',{n:l.length}))} (${fmt(l.reduce((a,i)=>a+i.size,0))})</h3>
+ ${risky?`<p class="err">${esc(t('ui.confirm.careful',{n:risky}))}</p>`:''}
+ ${rec?`<p class="err">${esc(t('ui.confirm.recent',{n:rec,days:RECENT_DAYS}))}</p>`:''}
+ ${root?`<p class="mut">${esc(t('ui.confirm.root'))}</p>`:''}
  <ul>${l.map(i=>`<li>${esc(i.title)} — ${fmt(i.size)}</li>`).join('')}</ul>
- <p class="mut">Bu amalni ortga qaytarib bo'lmaydi (savatchaga tushmaydi).</p>
- <div style="display:flex;gap:8px;justify-content:flex-end"><button onclick="dlg.close()">Bekor qilish</button><button class="dan" onclick="doClean()">Ha, o'chirish</button></div>`;
+ <p class="mut">${esc(t('ui.confirm.permanent'))}</p>
+ <div style="display:flex;gap:8px;justify-content:flex-end"><button onclick="dlg.close()">${esc(t('ui.cancel'))}</button><button class="dan" onclick="doClean()">${esc(t('web.yes_delete'))}</button></div>`;
  dlg.showModal();
 }
 async function doClean(){
  const dlg=document.getElementById('dlg'),ids=[...sel];
- dlg.innerHTML='<div class="spin">O\'chirilmoqda… (Docker/snap uchun biroz vaqt ketadi)</div>';
+ dlg.innerHTML=`<div class="spin">${esc(t('web.deleting'))}</div>`;
  const r=await fetch('/api/clean',{method:'POST',headers:{'Content-Type':'application/json','X-Token':TOKEN},body:JSON.stringify({ids})});
  const {results}=await r.json();const by=Object.fromEntries(ITEMS.map(i=>[i.id,i]));
  const ok=results.filter(x=>x.ok);
- dlg.innerHTML=`<h3>Tayyor: ${ok.length}/${results.length} muvaffaqiyatli · ~${fmt(ok.reduce((a,x)=>a+(by[x.id]?.size||0),0))} bo'shatildi</h3>
+ dlg.innerHTML=`<h3>${esc(t('web.done',{ok:ok.length,total:results.length,size:fmt(ok.reduce((a,x)=>a+(by[x.id]?.size||0),0))}))}</h3>
  <ul>${results.map(x=>`<li class="${x.ok?'ok':'err'}">${x.ok?'✓':'✗'} ${esc(by[x.id]?.title)} <span class="mut">— ${esc(x.msg)}</span></li>`).join('')}</ul>
- <div style="text-align:right"><button class="pri" onclick="dlg.close();scan()">Yopish va qayta skanerlash</button></div>`;
+ <div style="text-align:right"><button class="pri" onclick="dlg.close();scan()">${esc(t('web.close_rescan'))}</button></div>`;
 }
 scan();
 </script></body></html>"""
@@ -804,13 +796,13 @@ scan();
 def main():
     srv = ThreadingHTTPServer(("127.0.0.1", PORT), Handler)
     url = f"http://127.0.0.1:{PORT}"
-    print(f"Storage Cleaner ishga tushdi: {url}  (to'xtatish: Ctrl+C)")
+    print(_("web.started", url=url))
     if "--no-browser" not in sys.argv:
         threading.Timer(0.5, webbrowser.open, [url]).start()
     try:
         srv.serve_forever()
     except KeyboardInterrupt:
-        print("\nXayr!")
+        print("\n" + _("web.bye"))
 
 
 if __name__ == "__main__":

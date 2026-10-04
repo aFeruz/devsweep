@@ -1,85 +1,153 @@
 # 🧹 DevSweep
 
-**Safe disk cleaner for Linux developers.** Finds Docker leftovers, caches, `node_modules`, duplicates and large files — and protects anything you used recently.
+**English** · [Русский](README.ru.md) · [O'zbekcha](README.uz.md)
 
-> 🇺🇿 Linux dasturchilari uchun xavfsiz disk tozalagich. Docker qoldiqlari, keshlar, `node_modules`, dublikat va katta fayllarni topadi. Yaqinda ishlatilgan narsalarga tegmaydi. Interfeys o'zbek tilida.
+**Safe disk cleaner for Linux developers.** DevSweep finds Docker leftovers, caches, `node_modules`, duplicates and large files — and never touches anything you used recently.
 
-![DevSweep screenshot](docs/screenshot.png)
+![DevSweep](docs/screenshot-en.png)
 
 ## Features
 
-- **One-click safe clean** — removes only items that are regenerated automatically (caches, old build cache, old project dependencies). Nothing personal, nothing recent.
-- **Review list** — everything else (Docker images/volumes, big files, duplicates, installers) is listed with a safety label so you decide item by item.
+- **One-click safe clean** — removes only things that are regenerated automatically: caches, old Docker build cache, dependency folders of old projects, junk files. Nothing personal, nothing recent.
+- **Review list** — everything else (Docker images and volumes, large files, duplicates, installers) is listed with a safety label, and you pick item by item.
 - **Recency protection** — anything used in the last 14 days is hidden and never selected in bulk:
-  - containers: last start/stop time
-  - images: created / last pulled or tagged
-  - build cache: `LastUsedAt`
-  - projects: last modification of project files
-  - files: last access time (read with `O_NOATIME`, so scanning doesn't change it)
-- **Running-app awareness** — caches of open apps (Chrome, Cursor, VS Code, Telegram) are skipped with a warning.
-- **Real freed space** — measures `df` before and after cleaning.
-- **Zero dependencies** — plain Python 3 + GTK4/libadwaita that ships with GNOME.
+  - containers — last start/stop time
+  - images — created / last pulled or tagged
+  - build cache — last used time
+  - projects — last change of the project's files
+  - files — last access time (read with `O_NOATIME`, so scanning itself doesn't change it)
+- **Open apps are respected** — caches of running apps (Chrome, Cursor, VS Code, Telegram) are skipped with a warning.
+- **Real numbers** — after cleaning, the freed space is measured on disk, not estimated.
+- **3 languages** — English, Русский, O'zbekcha.
+- **No dependencies** — plain Python 3 and GTK4/libadwaita that ship with GNOME.
 
 ### What it finds
 
 | Category | Examples | Label |
 |---|---|---|
-| Docker | dangling images, unused build cache, stopped containers, unused images & volumes | safe / review / careful |
-| Caches | `~/.cache/*`, npm, yarn, pip, Gradle, Maven, Cargo, Go, Electron/VS Code caches | safe |
-| Project artifacts | `node_modules`, `.next`, `.nuxt`, `.turbo`, `venv`, `target`, Gradle `build` | safe (old) / review |
-| System (needs password) | disabled snap revisions, APT cache, journal logs | safe |
-| Files | duplicates (content hash), 100 MB+ files, installers (`.deb`, `.apk`, `.iso`…), logs, temp files, partial downloads | review / careful |
+| Docker | dangling images, unused build cache, stopped containers, unused images and volumes | safe / review / careful |
+| Caches | `~/.cache/*`, npm, yarn, pip, Gradle, Maven, Cargo, Go, pnpm, bun, Electron/VS Code caches | safe |
+| Project folders | `node_modules`, `.next`, `.nuxt`, `.turbo`, `.angular`, `venv`, `target`, Gradle `build` | safe (old) / review |
+| System (password) | disabled snap revisions, APT cache, systemd journal | safe |
+| Files | duplicates (by content), files over 100 MB, installers (`.deb`, `.apk`, `.iso`…), logs, temp files, incomplete downloads | review / careful |
+
+**Labels:** 🟢 **safe** — regenerated automatically · 🟡 **review** — check before deleting · 🔴 **careful** — data may be lost.
 
 ### Safety rules
 
-- Deletes only inside `$HOME` (system items go through `pkexec` with fixed commands).
-- The UI/browser never sends paths — only IDs of items found by the scanner.
-- Duplicates always keep one copy; files inside git repos are flagged as **careful**.
-- Android SDK, `~/snap` app data and similar tool folders are skipped.
-- Every delete shows a confirmation with the full list. Deletion is permanent (no trash).
+- Only paths inside your home folder are deleted. System items run fixed commands through `pkexec` (one password prompt).
+- The UI never sends paths to the backend — only IDs of items the scanner found.
+- Duplicates always keep one copy. Files inside git repositories are marked **careful**.
+- Tool folders like the Android SDK and `~/snap` app data are skipped.
+- Every deletion shows a confirmation with the full list. Deleted items do **not** go to the Trash.
 
-## Requirements
+## Installation
 
-- Linux (tested on Ubuntu 24.04 / GNOME)
-- Python 3.10+
-- For the desktop app: GTK 4 + libadwaita ≥ 1.5
+### 1. Requirements
+
+- Linux with Python 3.10+
+- Desktop app: GTK 4 and **libadwaita 1.5+** (Ubuntu 24.04+, Fedora 40+, Debian 13+, Arch)
+- Optional: Docker (for Docker cleanup), polkit/`pkexec` (for system items)
+
+Ubuntu usually has everything preinstalled. If not:
 
 ```bash
-sudo apt install python3-gi gir1.2-gtk-4.0 gir1.2-adw-1   # usually preinstalled on Ubuntu
+# Ubuntu / Debian
+sudo apt install git python3 python3-gi gir1.2-gtk-4.0 gir1.2-adw-1
+
+# Fedora
+sudo dnf install git python3 python3-gobject gtk4 libadwaita
+
+# Arch / Manjaro
+sudo pacman -S git python python-gobject gtk4 libadwaita
 ```
+
+### 2. Download
+
+```bash
+git clone https://github.com/aFeruz/devsweep.git ~/devsweep
+cd ~/devsweep
+```
+
+### 3. Install into the app menu (optional, no root needed)
+
+```bash
+./install.sh
+```
+
+This adds **DevSweep** to the application menu and a `devsweep` terminal command (in `~/.local/bin`).
 
 ## Usage
 
-```bash
-git clone https://github.com/aFeruz/devsweep.git
-cd devsweep
-
-python3 gui.py        # desktop app
-./install.sh          # optional: add "Storage Cleaner" to the app menu
-
-python3 cleaner.py    # alternative: browser UI at http://127.0.0.1:8765
-```
-
-### Shortcuts
-
-| Key | Action |
+| How | Command |
 |---|---|
-| `Ctrl` + `+` / `-` / `0` | font size bigger / smaller / reset |
-| `Ctrl` + `F` | search |
-| `F5` | rescan |
+| App menu | press <kbd>Super</kbd>, type **DevSweep** |
+| Terminal | `devsweep` or `python3 gui.py` |
+| Browser UI (no GTK needed) | `devsweep --web` or `python3 cleaner.py` → http://127.0.0.1:8765 |
+
+1. Wait for the scan (a few seconds to 1–2 minutes).
+2. **Overview** tab → press **🧹 Safe clean** to remove all safe junk at once.
+3. **Details** tab → review the rest and tick what you want to delete.
+
+### Keyboard shortcuts
+
+| Keys | Action |
+|---|---|
+| <kbd>Ctrl</kbd> + <kbd>+</kbd> / <kbd>-</kbd> / <kbd>0</kbd> | larger / smaller / default text size |
+| <kbd>Ctrl</kbd> + <kbd>F</kbd> | search |
+| <kbd>F5</kbd> or <kbd>Ctrl</kbd> + <kbd>R</kbd> | rescan |
+
+### Language
+
+The language follows your system (`LANG`). Change it in the ☰ menu → **Language** (saved), or for one run:
+
+```bash
+DEVSWEEP_LANG=ru devsweep    # en, ru, uz
+```
 
 ### Options
 
 ```bash
-RECENT_DAYS=30 python3 gui.py   # protect items used in the last 30 days (default 14)
-BIG_FILE_MB=500 python3 gui.py  # "large file" threshold (default 100 MB)
-PORT=9000 python3 cleaner.py    # browser UI port (default 8765)
+RECENT_DAYS=30 devsweep        # protect items used in the last 30 days (default: 14)
+BIG_FILE_MB=500 devsweep       # "large file" threshold (default: 100 MB)
+PORT=9000 devsweep --web       # browser UI port (default: 8765)
 ```
+
+## Update
+
+```bash
+cd ~/devsweep && git pull
+```
+
+## Uninstall
+
+```bash
+cd ~/devsweep && ./install.sh --uninstall
+rm -rf ~/devsweep ~/.config/devsweep   # remove the program and its settings
+```
+
+## Troubleshooting
+
+| Problem | Solution |
+|---|---|
+| `GTK 4 / libadwaita 1.5+ is required` | install the packages from step 1, or use the browser UI: `devsweep --web` |
+| Docker section is missing | make sure Docker runs and your user can use it: `sudo usermod -aG docker $USER`, then log out and back in |
+| System items fail | install polkit (`pkexec`); the password prompt must be confirmed |
+| `devsweep: command not found` | add `~/.local/bin` to `PATH`, or run `python3 ~/devsweep/gui.py` |
+| Port 8765 is busy | `PORT=9000 devsweep --web` |
+| A cache is "skipped because the app is open" | close the app and rescan (<kbd>F5</kbd>) |
 
 ## Project structure
 
 ```
-cleaner.py   scanners, delete actions, browser UI (stdlib only)
-gui.py       GTK4/libadwaita desktop app (uses cleaner.py)
-install.sh   adds a .desktop entry to the app menu
+cleaner.py   scanners, delete actions, browser UI (Python standard library only)
+gui.py       GTK4 / libadwaita desktop app
+i18n.py      translations: English, Russian, Uzbek
+install.sh   app menu entry + devsweep command (--uninstall to remove)
 ```
+
+Adding a language: add a column to every entry in `T` in `i18n.py` and register the code in `LANGS`.
+
+## License
+
+[MIT](LICENSE) © aFeruz

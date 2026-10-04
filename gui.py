@@ -1,10 +1,9 @@
 #!/usr/bin/env python3
-"""Storage Cleaner — GTK4/libadwaita oynali ilova (GNOME uslubida).
+"""DevSweep — GTK4/libadwaita oynali ilova (GNOME uslubida).
 
 Ishga tushirish:  python3 gui.py
 Skanerlash va o'chirish mantiqi cleaner.py dan olinadi.
 """
-import json
 import sys
 import threading
 from collections import defaultdict
@@ -12,30 +11,36 @@ from pathlib import Path
 
 import gi
 
-gi.require_version("Gtk", "4.0")
-gi.require_version("Adw", "1")
-from gi.repository import Adw, Gdk, Gio, GLib, GObject, Gtk  # noqa: E402
+try:
+    gi.require_version("Gtk", "4.0")
+    gi.require_version("Adw", "1")
+    from gi.repository import Adw, Gdk, Gio, GLib, GObject, Gtk  # noqa: E402
+    if (Adw.get_major_version(), Adw.get_minor_version()) < (1, 5):
+        raise ImportError(f"libadwaita {Adw.get_major_version()}.{Adw.get_minor_version()} < 1.5")
+except (ImportError, ValueError) as e:
+    sys.exit(f"DevSweep: GTK 4 / libadwaita 1.5+ is required ({e}).\n"
+             "Install: sudo apt install python3-gi gir1.2-gtk-4.0 gir1.2-adw-1\n"
+             "Or use the browser UI: python3 cleaner.py")
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import cleaner  # noqa: E402
+from i18n import LANGS, _, get_lang, load_settings, save_settings, set_lang  # noqa: E402
 
-APP_ID = "uz.feruz.StorageCleaner"
-SETTINGS = Path(GLib.get_user_config_dir()) / "storage-cleaner" / "settings.json"
+APP_ID = "io.github.aFeruz.DevSweep"
 FONT_MIN, FONT_MAX, FONT_DEFAULT = 10, 20, 13
 
-LABEL = {cleaner.SAFE: ("xavfsiz", "success"), cleaner.REVIEW: ("ko'rib chiqing", "warning"),
-         cleaner.CAREFUL: ("ehtiyot bo'ling", "error")}
+LABEL_CSS = {cleaner.SAFE: "success", cleaner.REVIEW: "warning", cleaner.CAREFUL: "error"}
 GROUP_ICON = {
-    "Docker": "application-x-executable-symbolic",
-    "Tizim": "emblem-system-symbolic",
-    "Kesh": "folder-download-symbolic",
-    "Dasturlar": "application-x-addon-symbolic",
-    "Dasturlash": "utilities-terminal-symbolic",
-    "Loyihalardagi": "folder-symbolic",
-    "Dublikat": "edit-copy-symbolic",
-    "Katta": "drive-harddisk-symbolic",
-    "Keraksiz": "user-trash-symbolic",
-    "O'rnatish": "package-x-generic-symbolic",
+    "docker": "application-x-executable-symbolic",
+    "system": "emblem-system-symbolic",
+    "cache": "folder-download-symbolic",
+    "appcache": "application-x-addon-symbolic",
+    "devcache": "utilities-terminal-symbolic",
+    "projects": "folder-symbolic",
+    "dupes": "edit-copy-symbolic",
+    "big": "drive-harddisk-symbolic",
+    "junk": "user-trash-symbolic",
+    "installers": "package-x-generic-symbolic",
 }
 
 CSS = """
@@ -69,30 +74,11 @@ def fmt(b):
 
 
 def ago(d):
-    return "bugun" if d == 0 else f"{d} kun avval"
-
-
-def group_icon(name):
-    return next((v for k, v in GROUP_ICON.items() if name.startswith(k)), "folder-symbolic")
+    return _("ui.ago.today") if d == 0 else _("ui.ago.days", n=d)
 
 
 def is_root(i):
-    return "parol" in i["group"]
-
-
-def load_settings():
-    try:
-        return json.loads(SETTINGS.read_text())
-    except (OSError, ValueError):
-        return {}
-
-
-def save_settings(s):
-    try:
-        SETTINGS.parent.mkdir(parents=True, exist_ok=True)
-        SETTINGS.write_text(json.dumps(s))
-    except OSError:
-        pass
+    return i["gkey"] == "system"
 
 
 def scrolled_label(text, height):
@@ -102,7 +88,7 @@ def scrolled_label(text, height):
 
 class Window(Adw.ApplicationWindow):
     def __init__(self, app):
-        super().__init__(application=app, title="Storage Cleaner", default_width=980, default_height=860)
+        super().__init__(application=app, title="DevSweep", default_width=980, default_height=860)
         self.add_css_class("sc")
         self.settings = load_settings()
         self.items, self.disk = [], {"total": 0, "avail": 0}
@@ -110,9 +96,7 @@ class Window(Adw.ApplicationWindow):
         self.query, self.show_recent, self.focus_group = "", False, None
         self.include_root = self.settings.get("include_root", True)
 
-        self.css = Gtk.CssProvider()
-        Gtk.StyleContext.add_provider_for_display(Gdk.Display.get_default(), self.css,
-                                                  Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
+        self.css = app.css
         self.apply_font()
         self.setup_actions(app)
 
@@ -125,36 +109,40 @@ class Window(Adw.ApplicationWindow):
         header = Adw.HeaderBar()
         self.tabs = Adw.ViewStack()
         header.set_title_widget(Adw.ViewSwitcher(stack=self.tabs, policy=Adw.ViewSwitcherPolicy.WIDE))
-        self.refresh_btn = Gtk.Button(icon_name="view-refresh-symbolic", tooltip_text="Qayta skanerlash (F5)")
+        self.refresh_btn = Gtk.Button(icon_name="view-refresh-symbolic", tooltip_text=_("ui.tip.refresh"))
         self.refresh_btn.connect("clicked", lambda *_: self.scan())
         header.pack_start(self.refresh_btn)
 
         menu = Gio.Menu()
         sel = Gio.Menu()
-        sel.append("Xavfsizlarini tanlash", "win.pick-safe")
-        sel.append("Tanlovni tozalash", "win.pick-none")
-        menu.append_section("Batafsil ro'yxat", sel)
+        sel.append(_("ui.menu.pick_safe"), "win.pick-safe")
+        sel.append(_("ui.menu.pick_none"), "win.pick-none")
+        menu.append_section(_("ui.menu.list"), sel)
         font = Gio.Menu()
-        font.append("Yozuvni kattalashtirish", "win.font-up")
-        font.append("Yozuvni kichraytirish", "win.font-down")
-        font.append("Standart o'lcham", "win.font-reset")
-        menu.append_section("Yozuv o'lchami", font)
-        header.pack_end(Gtk.MenuButton(icon_name="open-menu-symbolic", menu_model=menu, tooltip_text="Menyu"))
-        self.search_btn = Gtk.ToggleButton(icon_name="system-search-symbolic", tooltip_text="Qidirish (Ctrl+F)")
+        font.append(_("ui.menu.font_up"), "win.font-up")
+        font.append(_("ui.menu.font_down"), "win.font-down")
+        font.append(_("ui.menu.font_reset"), "win.font-reset")
+        menu.append_section(_("ui.menu.font"), font)
+        langs = Gio.Menu()
+        for code, name in LANGS.items():
+            langs.append(name, f"win.lang::{code}")
+        menu.append_section(_("ui.menu.lang"), langs)
+        header.pack_end(Gtk.MenuButton(icon_name="open-menu-symbolic", menu_model=menu, tooltip_text=_("ui.tip.menu")))
+        self.search_btn = Gtk.ToggleButton(icon_name="system-search-symbolic", tooltip_text=_("ui.tip.search"))
         header.pack_end(self.search_btn)
         view.add_top_bar(header)
 
         # --- yuklanish / asosiy
         self.root = Gtk.Stack(transition_type=Gtk.StackTransitionType.CROSSFADE)
-        self.loading = Adw.StatusPage(title="Skanerlanmoqda…", description="Bu 1-2 daqiqa olishi mumkin",
+        self.loading = Adw.StatusPage(title=_("ui.loading"), description=_("ui.loading.desc"),
                                       child=Gtk.Spinner(spinning=True, width_request=56, height_request=56))
         self.root.add_named(self.loading, "loading")
         self.root.add_named(self.tabs, "main")
         view.set_content(self.root)
 
         self.overview_scroll = Gtk.ScrolledWindow(hscrollbar_policy=Gtk.PolicyType.NEVER)
-        self.tabs.add_titled_with_icon(self.overview_scroll, "overview", "Umumiy", "starred-symbolic")
-        self.tabs.add_titled_with_icon(self.build_details(), "details", "Batafsil", "view-list-symbolic")
+        self.tabs.add_titled_with_icon(self.overview_scroll, "overview", _("ui.tab.overview"), "starred-symbolic")
+        self.tabs.add_titled_with_icon(self.build_details(), "details", _("ui.tab.details"), "view-list-symbolic")
         self.tabs.connect("notify::visible-child-name", self.on_tab_changed)
 
         self.scan()
@@ -173,7 +161,22 @@ class Window(Adw.ApplicationWindow):
             act.connect("activate", fn)
             self.add_action(act)
             app.set_accels_for_action(f"win.{name}", accels)
+        lang = Gio.SimpleAction.new_stateful("lang", GLib.VariantType.new("s"), GLib.Variant("s", get_lang()))
+        lang.connect("activate", self.on_lang)
+        self.add_action(lang)
 
+    def on_lang(self, action, value):
+        code = value.get_string()
+        if code == get_lang():
+            return
+        set_lang(code)
+        self.settings["lang"] = code
+        save_settings(self.settings)
+        app = self.get_application()
+        new = Window(app)  # barcha matnlar yangi tilda quriladi va qayta skanerlanadi
+        new.set_default_size(self.get_width(), self.get_height())
+        new.present()
+        self.destroy()
     def apply_font(self):
         size = self.settings.get("font", FONT_DEFAULT)
         css = CSS.format(font=size)
@@ -184,15 +187,15 @@ class Window(Adw.ApplicationWindow):
         self.settings["font"] = max(FONT_MIN, min(FONT_MAX, size))
         save_settings(self.settings)
         self.apply_font()
-        self.toasts.add_toast(Adw.Toast(title=f"Yozuv o'lchami: {self.settings['font']}pt", timeout=1))
+        self.toasts.add_toast(Adw.Toast(title=_("ui.toast.font", n=self.settings["font"]), timeout=1))
 
     # ---------------------------------------------------------------- skan
     def scan(self):
         if not self.refresh_btn.get_sensitive():
             return
         self.refresh_btn.set_sensitive(False)
-        self.loading.set_title("Skanerlanmoqda…")
-        self.loading.set_description("Bu 1-2 daqiqa olishi mumkin")
+        self.loading.set_title(_("ui.loading"))
+        self.loading.set_description(_("ui.loading.desc"))
         self.root.set_visible_child_name("loading")
         self.selected.clear()
 
@@ -209,7 +212,7 @@ class Window(Adw.ApplicationWindow):
         self.items, self.disk = data["items"], data["disk"]
         self.refresh_btn.set_sensitive(True)
         for e in data.get("errors") or []:
-            self.toasts.add_toast(Adw.Toast(title=f"Skaner xatosi: {e[:80]}", timeout=6))
+            self.toasts.add_toast(Adw.Toast(title=_("ui.toast.error", e=e[:80]), timeout=6))
         self.render_overview()
         self.render_details()
         self.root.set_visible_child_name("main")
@@ -238,8 +241,8 @@ class Window(Adw.ApplicationWindow):
         row = Gtk.Box(spacing=12)
         row.append(Gtk.Image(icon_name="drive-harddisk-symbolic", pixel_size=40))
         txt = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, valign=Gtk.Align.CENTER)
-        txt.append(Gtk.Label(label=f"{fmt(avail)} bo'sh", xalign=0, css_classes=["disk-free"]))
-        txt.append(Gtk.Label(label=f"{fmt(total)} dan {fmt(total - avail)} ishlatilgan", xalign=0,
+        txt.append(Gtk.Label(label=_("ui.disk.free", free=fmt(avail)), xalign=0, css_classes=["disk-free"]))
+        txt.append(Gtk.Label(label=_("ui.disk.used", used=fmt(total - avail), total=fmt(total)), xalign=0,
                              css_classes=["dim-label"]))
         row.append(txt)
         disk.append(row)
@@ -249,7 +252,7 @@ class Window(Adw.ApplicationWindow):
             lvl.remove_offset_value(o)
         disk.append(lvl)
         if quick_size:
-            disk.append(Gtk.Label(label=f"Xavfsiz tozalashdan keyin: ~{fmt(avail + quick_size)} bo'sh bo'ladi",
+            disk.append(Gtk.Label(label=_("ui.disk.after", free=fmt(avail + quick_size)),
                                   xalign=0, css_classes=["dim-label", "hint"]))
         box.append(disk)
 
@@ -258,10 +261,8 @@ class Window(Adw.ApplicationWindow):
         head = Gtk.Box(spacing=14)
         head.append(Gtk.Image(icon_name="emblem-ok-symbolic", pixel_size=40, css_classes=["success"]))
         ht = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, valign=Gtk.Align.CENTER, hexpand=True)
-        ht.append(Gtk.Label(label="Xavfsiz tozalash", xalign=0, css_classes=["card-title"]))
-        ht.append(Gtk.Label(label="Keshlar, eski Docker qoldiqlari, eski loyihalarning paket papkalari va "
-                                  "keraksiz fayllar. Hammasi kerak bo'lsa avtomatik qayta tiklanadi — shaxsiy "
-                                  "fayllaringiz va yaqinda ishlatilgan narsalarga tegilmaydi.",
+        ht.append(Gtk.Label(label=_("ui.quick.title"), xalign=0, css_classes=["card-title"]))
+        ht.append(Gtk.Label(label=_("ui.quick.desc"),
                             xalign=0, wrap=True, css_classes=["dim-label"]))
         head.append(ht)
         card.append(head)
@@ -270,14 +271,13 @@ class Window(Adw.ApplicationWindow):
         if quick:
             by_group = defaultdict(list)
             for i in quick:
-                by_group[i["group"]].append(i)
+                by_group[i["gkey"]].append(i)
             lb = Gtk.ListBox(selection_mode=Gtk.SelectionMode.NONE, css_classes=["boxed-list"])
             for g, lst in sorted(by_group.items(), key=lambda x: -sum(i["size"] for i in x[1])):
-                r = Adw.ActionRow(use_markup=False, activatable=True,
-                                  tooltip_text="Batafsil ro'yxatda ko'rish")
-                r.set_title(g)
-                r.set_subtitle(f"{len(lst)} ta element")
-                r.add_prefix(Gtk.Image(icon_name=group_icon(g)))
+                r = Adw.ActionRow(use_markup=False, activatable=True, tooltip_text=_("ui.tip.show_details"))
+                r.set_title(lst[0]["group"])
+                r.set_subtitle(_("ui.items", n=len(lst)))
+                r.add_prefix(Gtk.Image(icon_name=GROUP_ICON.get(g, "folder-symbolic")))
                 r.add_suffix(Gtk.Label(label=fmt(sum(i["size"] for i in lst)), css_classes=["size-label"]))
                 r.add_suffix(Gtk.Image(icon_name="go-next-symbolic"))
                 r.connect("activated", lambda _r, name=g: self.show_group(name))
@@ -287,27 +287,26 @@ class Window(Adw.ApplicationWindow):
         root_items = [i for i in self.items if is_root(i) and i["safety"] == cleaner.SAFE and not i["recent"]]
         if root_items:  # tizim musori bo'lsa, uni qo'shish/qo'shmaslikni tanlash
             sw = Adw.SwitchRow(use_markup=False, active=self.include_root)
-            sw.set_title(f"Tizim keshlarini ham tozalash (+{fmt(sum(i['size'] for i in root_items))})"
-                         if not self.include_root else "Tizim keshlarini ham tozalash")
-            sw.set_subtitle("Eski snap versiyalari, APT keshi, jurnallar — parol so'raladi")
+            sw.set_title(_("ui.quick.root_plus", size=fmt(sum(i["size"] for i in root_items)))
+                         if not self.include_root else _("ui.quick.root"))
+            sw.set_subtitle(_("ui.quick.root_sub"))
             sw.connect("notify::active", self.on_root_toggled)
             opt = Gtk.ListBox(selection_mode=Gtk.SelectionMode.NONE, css_classes=["boxed-list"])
             opt.append(sw)
             card.append(opt)
 
         if quick:
-            btn = Gtk.Button(label=f"🧹  Xavfsiz tozalash — {fmt(quick_size)}", halign=Gtk.Align.CENTER,
+            btn = Gtk.Button(label=_("ui.quick.btn", size=fmt(quick_size)), halign=Gtk.Align.CENTER,
                              css_classes=["suggested-action", "pill", "big-button"], margin_top=6)
             btn.connect("clicked", lambda *_: self.confirm(quick, quick_mode=True))
             card.append(btn)
         else:
-            card.append(Gtk.Label(label="🎉 Xavfsiz o'chiriladigan musor qolmadi!", xalign=0))
+            card.append(Gtk.Label(label=_("ui.quick.none"), xalign=0))
 
         if skipped_open:
-            names = sorted({i["warn"].split(" hozir")[0] for i in skipped_open})
+            names = sorted({i["app"] for i in skipped_open if i.get("app")})
             card.append(Gtk.Label(
-                label=f"ℹ {fmt(sum(i['size'] for i in skipped_open))} o'tkazib yuborildi, chunki "
-                      f"{', '.join(names)} hozir ochiq. Yopib, qayta skanerlang.",
+                label=_("ui.quick.skipped", size=fmt(sum(i["size"] for i in skipped_open)), apps=", ".join(names)),
                 xalign=0, wrap=True, css_classes=["dim-label", "hint"]))
         box.append(card)
 
@@ -315,13 +314,12 @@ class Window(Adw.ApplicationWindow):
         rv = Gtk.Box(spacing=14, css_classes=["card", "card-pad"])
         rv.append(Gtk.Image(icon_name="dialog-warning-symbolic", pixel_size=40, css_classes=["warning"]))
         rt = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, hexpand=True, valign=Gtk.Align.CENTER, spacing=2)
-        rt.append(Gtk.Label(label=f"O'zingiz ko'rib chiqing — {fmt(sum(i['size'] for i in review))}",
+        rt.append(Gtk.Label(label=_("ui.review.title", size=fmt(sum(i["size"] for i in review))),
                             xalign=0, css_classes=["card-title"]))
-        rt.append(Gtk.Label(label="Docker image va volume'lar, katta fayllar, dublikatlar, installerlar. "
-                                  "Bular avtomatik o'chirilmaydi — kerakligini o'zingiz hal qilasiz.",
+        rt.append(Gtk.Label(label=_("ui.review.desc"),
                             xalign=0, wrap=True, css_classes=["dim-label"]))
         rv.append(rt)
-        go = Gtk.Button(label="Ro'yxatni ochish", valign=Gtk.Align.CENTER, css_classes=["pill"])
+        go = Gtk.Button(label=_("ui.review.btn"), valign=Gtk.Align.CENTER, css_classes=["pill"])
         go.connect("clicked", lambda *_: self.tabs.set_visible_child_name("details"))
         rv.append(go)
         box.append(rv)
@@ -329,12 +327,11 @@ class Window(Adw.ApplicationWindow):
         n_recent = sum(i["recent"] for i in self.items)
         if n_recent:
             box.append(Gtk.Label(
-                label=f"🛡 Oxirgi {cleaner.RECENT_DAYS} kunda ishlatilgan {n_recent} ta element himoyalangan "
-                      f"va hech qayerda hisobga olinmagan.", wrap=True, css_classes=["dim-label", "hint"]))
+                label=_("ui.protected", n=n_recent, days=cleaner.RECENT_DAYS), wrap=True, css_classes=["dim-label", "hint"]))
 
         self.overview_scroll.set_child(Adw.Clamp(child=box, maximum_size=760))
 
-    def on_root_toggled(self, sw, _):
+    def on_root_toggled(self, sw, _pspec):
         self.include_root = sw.get_active()
         self.settings["include_root"] = self.include_root
         save_settings(self.settings)
@@ -349,7 +346,7 @@ class Window(Adw.ApplicationWindow):
     def build_details(self):
         box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
         self.search_bar = Gtk.SearchBar()
-        entry = Gtk.SearchEntry(placeholder_text="Nomi yoki yo'li bo'yicha qidirish…", hexpand=True)
+        entry = Gtk.SearchEntry(placeholder_text=_("ui.search"), hexpand=True)
         entry.connect("search-changed", self.on_search)
         self.search_entry = entry
         self.search_bar.set_child(Adw.Clamp(child=entry, maximum_size=760))
@@ -364,11 +361,11 @@ class Window(Adw.ApplicationWindow):
         bar = Gtk.Box(spacing=12, css_classes=["bottom-bar"])
         info = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, hexpand=True, valign=Gtk.Align.CENTER)
         self.sel_size = Gtk.Label(label="0 B", xalign=0, css_classes=["title-2"])
-        self.sel_count = Gtk.Label(label="tanlanmagan", xalign=0, css_classes=["dim-label"])
+        self.sel_count = Gtk.Label(label=_("ui.sel.none"), xalign=0, css_classes=["dim-label"])
         info.append(self.sel_size)
         info.append(self.sel_count)
         bar.append(info)
-        self.del_btn = Gtk.Button(label="Tanlanganlarni o'chirish", sensitive=False, valign=Gtk.Align.CENTER,
+        self.del_btn = Gtk.Button(label=_("ui.delete_selected"), sensitive=False, valign=Gtk.Align.CENTER,
                                   css_classes=["destructive-action", "pill", "big-button"])
         self.del_btn.connect("clicked", lambda *_: self.confirm(self.sel_items()))
         bar.append(self.del_btn)
@@ -396,12 +393,11 @@ class Window(Adw.ApplicationWindow):
         self.checks = {}
         page = Adw.PreferencesPage()
 
-        top = Adw.PreferencesGroup(description="Har bir elementni alohida tanlang. Bo'lim yonidagi belgi "
-                                               "bo'limdagi hammasini tanlaydi.")
+        top = Adw.PreferencesGroup(description=_("ui.details.desc"))
         n_recent = sum(i["recent"] for i in self.items)
         sw = Adw.SwitchRow(use_markup=False, active=self.show_recent)
-        sw.set_title("Yaqinda ishlatilganlarni ham ko'rsatish")
-        sw.set_subtitle(f"Oxirgi {cleaner.RECENT_DAYS} kunda ishlatilgan {n_recent} ta element")
+        sw.set_title(_("ui.recent.show"))
+        sw.set_subtitle(_("ui.recent.sub", n=n_recent, days=cleaner.RECENT_DAYS))
         sw.connect("notify::active", self.on_recent_toggled)
         top.add(sw)
         page.add(top)
@@ -409,7 +405,7 @@ class Window(Adw.ApplicationWindow):
         groups = defaultdict(list)
         for i in self.items:
             if self.visible(i):
-                groups[i["group"]].append(i)
+                groups[i["gkey"]].append(i)
         content = Adw.PreferencesGroup()
         focus_row = None
         for name, lst in sorted(groups.items(), key=lambda g: -sum(i["size"] for i in g[1])):
@@ -420,7 +416,7 @@ class Window(Adw.ApplicationWindow):
                 focus_row = exp
             content.add(exp)
         if not groups:
-            content.add(Adw.ActionRow(title="Hech narsa topilmadi"))
+            content.add(Adw.ActionRow(title=_("ui.nothing")))
         page.add(content)
         self.details_scroll.set_child(page)
         if focus_row:
@@ -428,14 +424,14 @@ class Window(Adw.ApplicationWindow):
         self.focus_group = None
         self.update_selection()
 
-    def group_row(self, name, lst):
+    def group_row(self, gkey, lst):
         exp = Adw.ExpanderRow(use_markup=False, expanded=bool(self.query))
-        exp.set_title(name)
+        exp.set_title(lst[0]["group"])
         safe_n = sum(i["safety"] == cleaner.SAFE for i in lst)
-        exp.set_subtitle(f"{len(lst)} ta element" + (f" · {safe_n} tasi xavfsiz" if safe_n else ""))
-        exp.add_prefix(Gtk.Image(icon_name=group_icon(name), pixel_size=24))
+        exp.set_subtitle(_("ui.items_safe", n=len(lst), s=safe_n) if safe_n else _("ui.items", n=len(lst)))
+        exp.add_prefix(Gtk.Image(icon_name=GROUP_ICON.get(gkey, "folder-symbolic"), pixel_size=24))
         exp.add_suffix(Gtk.Label(label=fmt(sum(i["size"] for i in lst)), css_classes=["size-label"]))
-        gcheck = Gtk.CheckButton(valign=Gtk.Align.CENTER, tooltip_text="Hammasini tanlash",
+        gcheck = Gtk.CheckButton(valign=Gtk.Align.CENTER, tooltip_text=_("ui.tip.select_all"),
                                  active=all(i["id"] in self.selected for i in lst))
         gcheck.connect("toggled", self.on_group_toggled, lst)
         exp.add_suffix(gcheck)
@@ -446,9 +442,9 @@ class Window(Adw.ApplicationWindow):
     def item_row(self, i):
         parts = [i["desc"]]
         if i.get("used") is not None:
-            parts.append(f"oxirgi ishlatilgan: {ago(i['used'])}")
+            parts.append(_("ui.when.used", ago=ago(i["used"])))
         elif i.get("age") is not None:
-            parts.append(f"o'zgargan: {ago(i['age'])}")
+            parts.append(_("ui.when.modified", ago=ago(i["age"])))
         sub = " · ".join(parts)
         if i.get("path"):
             sub += f"\n{i['path']}"
@@ -463,14 +459,15 @@ class Window(Adw.ApplicationWindow):
         row.set_activatable_widget(check)
         self.checks[i["id"]] = check
 
-        text, cls = LABEL[i["safety"]]
         if i["recent"]:
-            row.add_suffix(Gtk.Label(label="yaqinda", css_classes=["badge", "accent"], valign=Gtk.Align.CENTER))
-        row.add_suffix(Gtk.Label(label=text, css_classes=["badge", cls], valign=Gtk.Align.CENTER))
+            row.add_suffix(Gtk.Label(label=_("ui.label.recent"), css_classes=["badge", "accent"],
+                                     valign=Gtk.Align.CENTER))
+        row.add_suffix(Gtk.Label(label=_(f"ui.label.{i['safety']}"), css_classes=["badge", LABEL_CSS[i["safety"]]],
+                                 valign=Gtk.Align.CENTER))
         row.add_suffix(Gtk.Label(label=fmt(i["size"]), css_classes=["size-label"], width_chars=9, xalign=1))
         if i.get("paths"):
             btn = Gtk.MenuButton(icon_name="view-list-symbolic", valign=Gtk.Align.CENTER,
-                                 css_classes=["flat"], tooltip_text="Fayllar ro'yxati")
+                                 css_classes=["flat"], tooltip_text=_("ui.tip.files"))
             lbl = Gtk.Label(label="\n".join(i["paths"]), selectable=True, xalign=0, css_classes=["monospace"])
             btn.set_popover(Gtk.Popover(child=Gtk.ScrolledWindow(child=lbl, min_content_width=520,
                                                                  min_content_height=260)))
@@ -495,7 +492,7 @@ class Window(Adw.ApplicationWindow):
                 self.set_selected(i["id"], on)
         self.update_selection()
 
-    def on_recent_toggled(self, sw, _):
+    def on_recent_toggled(self, sw, _pspec):
         self.show_recent = sw.get_active()
         if not self.show_recent:
             self.selected -= {i["id"] for i in self.items if i["recent"]}
@@ -522,7 +519,7 @@ class Window(Adw.ApplicationWindow):
     def update_selection(self):
         lst = self.sel_items()
         self.sel_size.set_label(fmt(sum(i["size"] for i in lst)))
-        self.sel_count.set_label(f"{len(lst)} ta tanlandi" if lst else "hech narsa tanlanmagan")
+        self.sel_count.set_label(_("ui.sel.count", n=len(lst)) if lst else _("ui.sel.none"))
         self.del_btn.set_sensitive(bool(lst))
 
     # ---------------------------------------------------------------- o'chirish
@@ -532,25 +529,22 @@ class Window(Adw.ApplicationWindow):
         careful = sum(i["safety"] == cleaner.CAREFUL for i in lst)
         recent = sum(i["recent"] for i in lst)
         if careful:
-            notes.append(f"⚠ {careful} ta \"ehtiyot bo'ling\" belgili element bor!")
+            notes.append(_("ui.confirm.careful", n=careful))
         if recent:
-            notes.append(f"⚠ {recent} tasi oxirgi {cleaner.RECENT_DAYS} kunda ishlatilgan!")
+            notes.append(_("ui.confirm.recent", n=recent, days=cleaner.RECENT_DAYS))
         if any(is_root(i) for i in lst):
-            notes.append("🔑 Tizim elementlari uchun parol so'raladi.")
-        if quick_mode:
-            notes.append("Faqat xavfsiz elementlar — kerak bo'lsa qayta tiklanadi.")
-        else:
-            notes.append("Bu amalni ortga qaytarib bo'lmaydi (savatchaga tushmaydi).")
+            notes.append(_("ui.confirm.root"))
+        notes.append(_("ui.confirm.quick_note") if quick_mode else _("ui.confirm.permanent"))
 
-        dlg = Adw.AlertDialog(heading=f"{fmt(total)} tozalansinmi?" if quick_mode
-                              else f"{len(lst)} ta element o'chirilsinmi?",
-                              body=f"{len(lst)} ta element, jami {fmt(total)}.\n\n" + "\n".join(notes))
-        exp = Gtk.Expander(label="Ro'yxatni ko'rish", expanded=not quick_mode)
+        dlg = Adw.AlertDialog(heading=_("ui.confirm.quick_heading", size=fmt(total)) if quick_mode
+                              else _("ui.confirm.heading", n=len(lst)),
+                              body=_("ui.confirm.body", n=len(lst), size=fmt(total)) + "\n\n" + "\n".join(notes))
+        exp = Gtk.Expander(label=_("ui.confirm.list"), expanded=not quick_mode)
         exp.set_child(scrolled_label("\n".join(f"• {i['title']} — {fmt(i['size'])}" for i in lst),
                                      min(260, 24 * len(lst) + 10)))
         dlg.set_extra_child(exp)
-        dlg.add_response("cancel", "Bekor qilish")
-        dlg.add_response("go", "Tozalash" if quick_mode else "O'chirish")
+        dlg.add_response("cancel", _("ui.cancel"))
+        dlg.add_response("go", _("ui.clean") if quick_mode else _("ui.delete"))
         dlg.set_response_appearance("go", Adw.ResponseAppearance.SUGGESTED if quick_mode
                                     else Adw.ResponseAppearance.DESTRUCTIVE)
         dlg.set_default_response("cancel")
@@ -560,8 +554,8 @@ class Window(Adw.ApplicationWindow):
 
     def do_clean(self, lst):
         self.refresh_btn.set_sensitive(False)
-        self.loading.set_title("Tozalanmoqda…")
-        self.loading.set_description(f"{len(lst)} ta element · Docker va snap uchun biroz vaqt ketishi mumkin")
+        self.loading.set_title(_("ui.cleaning"))
+        self.loading.set_description(_("ui.cleaning.desc", n=len(lst)))
         self.root.set_visible_child_name("loading")
         before = self.disk["avail"]
         by_id = {i["id"]: i for i in lst}
@@ -575,18 +569,18 @@ class Window(Adw.ApplicationWindow):
     def on_cleaned(self, results, by_id, before):
         ok = [r for r in results if r["ok"]]
         fail = [r for r in results if not r["ok"]]
-        rc, out, _ = cleaner.run(["df", "-B1", "--output=avail", str(cleaner.HOME)])
+        rc, out, _err = cleaner.run(["df", "-B1", "--output=avail", str(cleaner.HOME)])
         after = int(out.split()[-1]) if rc == 0 else before
         freed = max(0, after - before)
 
-        body = f"{len(ok)} / {len(results)} ta element tozalandi.\nHozir bo'sh joy: {fmt(after)}"
-        dlg = Adw.AlertDialog(heading=f"🎉 {fmt(freed)} bo'shatildi" if freed else "Tayyor", body=body)
+        body = _("ui.done.body", ok=len(ok), total=len(results), free=fmt(after))
+        dlg = Adw.AlertDialog(heading=_("ui.done.freed", size=fmt(freed)) if freed else _("ui.done"), body=body)
         if fail:
             dlg.set_extra_child(scrolled_label(
-                "Bajarilmaganlar:\n" + "\n".join(
+                _("ui.done.failed") + "\n" + "\n".join(
                     f"✗ {by_id.get(r['id'], {}).get('title', r['id'])} — {r['msg']}" for r in fail),
                 min(220, 24 * len(fail) + 30)))
-        dlg.add_response("ok", "Zo'r")
+        dlg.add_response("ok", _("ui.ok"))
         dlg.present(self)
         self.refresh_btn.set_sensitive(True)
         self.scan()
@@ -598,6 +592,10 @@ class App(Adw.Application):
         super().__init__(application_id=APP_ID)
 
     def do_activate(self):
+        if not getattr(self, "css", None):  # CSS provider bitta — til almashganda yangi oyna ham ishlatadi
+            self.css = Gtk.CssProvider()
+            Gtk.StyleContext.add_provider_for_display(Gdk.Display.get_default(), self.css,
+                                                      Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
         win = self.props.active_window or Window(self)
         win.present()
 
