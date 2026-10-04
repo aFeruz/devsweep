@@ -700,14 +700,16 @@ details{font-size:13px;color:var(--mut)}details div{font:12.5px ui-monospace,mon
 dialog{border:1px solid var(--line);border-radius:12px;background:var(--card);color:var(--fg);max-width:640px;width:calc(100% - 32px)}
 dialog ul{max-height:45vh;overflow:auto;padding-left:18px}.ok{color:var(--safe)}.err{color:var(--car)}
 .spin{padding:60px 0;text-align:center}
+.ic{width:1.1em;height:1.1em;vertical-align:-.18em;fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round;stroke-linejoin:round;flex:none}
+h1 .ic{width:1.3em;height:1.3em;color:var(--acc)}button .ic{margin-right:6px}.note{display:flex;gap:8px;align-items:flex-start;margin:6px 0}
 </style></head><body>
 <header>
- <h1>🧹 DevSweep <select aria-label="{{ui.menu.lang}}" onchange="location.href='/?lang='+this.value">__LANGOPTS__</select></h1>
+ <h1><svg class="ic"><use href="#i-drive"/></svg>DevSweep <select aria-label="{{ui.menu.lang}}" onchange="location.href='/?lang='+this.value">__LANGOPTS__</select></h1>
  <div class="mut" id="disk">{{web.disk_loading}}</div>
  <div class="bar"><i id="used" style="width:0"></i></div>
  <div class="tools">
-  <button onclick="scan()">{{web.rescan}}</button>
-  <button onclick="pick('safe')">{{web.pick_safe}}</button>
+  <button onclick="scan()"><svg class="ic"><use href="#i-refresh"/></svg>{{web.rescan}}</button>
+  <button onclick="pick('safe')"><svg class="ic"><use href="#i-check"/></svg>{{web.pick_safe}}</button>
   <button onclick="pick(null)">{{ui.menu.pick_none}}</button>
   <label style="align-self:center"><input type="checkbox" id="showrec" onchange="toggleRecent(this.checked)">
    {{ui.recent.show}} (<span id="reccnt">0</span>)</label>
@@ -719,11 +721,22 @@ dialog ul{max-height:45vh;overflow:auto;padding-left:18px}.ok{color:var(--safe)}
 </header>
 <main id="main" class="norecent"><div class="spin">{{ui.loading}} {{ui.loading.desc}}</div></main>
 <footer><div class="in"><div><b id="selsz">0 B</b> <span class="mut" id="selcnt">{{ui.sel.none}}</span></div>
-<button class="dan" id="go" disabled onclick="confirmClean()">🗑 {{ui.delete_selected}}</button></div></footer>
+<button class="dan" id="go" disabled onclick="confirmClean()"><svg class="ic"><use href="#i-trash"/></svg>{{ui.delete_selected}}</button></div></footer>
 <dialog id="dlg"></dialog>
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+ <symbol id="i-drive" viewBox="0 0 24 24"><rect x="2" y="13" width="20" height="8" rx="2"/><path d="M5.5 13 8 4h8l2.5 9"/><path d="M6 17h.01M10 17h.01"/></symbol>
+ <symbol id="i-refresh" viewBox="0 0 24 24"><path d="M21 12a9 9 0 1 1-2.6-6.4L21 8"/><path d="M21 3v5h-5"/></symbol>
+ <symbol id="i-check" viewBox="0 0 24 24"><path d="M20 6 9 17l-5-5"/></symbol>
+ <symbol id="i-trash" viewBox="0 0 24 24"><path d="M3 6h18M8 6V4h8v2M19 6l-1 14H6L5 6M10 11v6M14 11v6"/></symbol>
+ <symbol id="i-alert" viewBox="0 0 24 24"><path d="M12 3 2 21h20z"/><path d="M12 10v5M12 18h.01"/></symbol>
+ <symbol id="i-clock" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></symbol>
+ <symbol id="i-lock" viewBox="0 0 24 24"><rect x="4" y="11" width="16" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></symbol>
+ <symbol id="i-info" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 11v6M12 7.5h.01"/></symbol>
+</svg>
 <script>
 const TOKEN="__TOKEN__",L=__I18N__;let ITEMS=[],RECENT_DAYS=14;const sel=new Set();
 const t=(k,v={})=>((v.n===1&&L[k+'.one'])||L[k]||k).replace(/\{(\w+)\}/g,(_,x)=>v[x]??'');
+const ic=n=>`<svg class="ic"><use href="#i-${n}"/></svg>`,note=(n,cls,txt)=>`<p class="note ${cls}">${ic(n)}<span>${esc(txt)}</span></p>`;
 const fmt=b=>{const u=['B','KB','MB','GB','TB'];let i=0;while(b>=1024&&i<4){b/=1024;i++}return (i?b.toFixed(1):b)+' '+u[i]};
 const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 async function scan(){
@@ -748,11 +761,11 @@ function render(errors){
    h+=`<div class="row${i.recent?' recent':''}" id="r${i.id}" onclick="rowClick(event,'${i.id}')"><input type="checkbox" data-id="${i.id}" onchange="tog('${i.id}',this.checked)">
    <div><div class="t">${esc(i.title)}<span class="b ${i.safety}">${esc(t('ui.label.'+i.safety))}</span>${i.recent?`<span class="b recent">${esc(t('ui.label.recent'))}</span>`:''}</div>
    <div class="d">${esc(i.desc)}${esc(when(i))}</div>
-   ${i.path?`<div class="p">${esc(i.path)}</div>`:''}${i.paths?`<details><summary>${esc(t('ui.tip.files'))}</summary>${i.paths.map(p=>`<div>${esc(p)}</div>`).join('')}</details>`:''}${i.warn?`<div class="w">⚠ ${esc(i.warn)}</div>`:''}</div><div class="sz">${fmt(i.size)}</div></div>`;
+   ${i.path?`<div class="p">${esc(i.path)}</div>`:''}${i.paths?`<details><summary>${esc(t('ui.tip.files'))}</summary>${i.paths.map(p=>`<div>${esc(p)}</div>`).join('')}</details>`:''}${i.warn?`<div class="w">${ic('alert')} ${esc(i.warn)}</div>`:''}</div><div class="sz">${fmt(i.size)}</div></div>`;
   }
   h+='</section>';
  }
- document.getElementById('main').innerHTML=h||`<div class="spin">${esc(t('ui.nothing'))} 🎉</div>`;
+ document.getElementById('main').innerHTML=h||`<div class="spin">${ic('check')} ${esc(t('ui.nothing'))}</div>`;
 }
 const ago=d=>d===0?t('ui.ago.today'):t('ui.ago.days',{n:d});
 function when(i){const p=[];if(i.used!=null)p.push(t('ui.when.used',{ago:ago(i.used)}));if(i.age!=null&&i.age!==i.used)p.push(t('ui.when.modified',{ago:ago(i.age)}));return p.length?' · '+p.join(' · '):''}
@@ -771,11 +784,11 @@ function confirmClean(){
  const l=ITEMS.filter(i=>sel.has(i.id)),dlg=document.getElementById('dlg');
  const risky=l.filter(i=>i.safety==='careful').length,rec=l.filter(i=>i.recent).length,root=l.some(i=>i.gkey==='system');
  dlg.innerHTML=`<h3>${esc(t('ui.confirm.heading',{n:l.length}))} (${fmt(l.reduce((a,i)=>a+i.size,0))})</h3>
- ${risky?`<p class="err">${esc(t('ui.confirm.careful',{n:risky}))}</p>`:''}
- ${rec?`<p class="err">${esc(t('ui.confirm.recent',{n:rec,days:RECENT_DAYS}))}</p>`:''}
- ${root?`<p class="mut">${esc(t('ui.confirm.root'))}</p>`:''}
+ ${risky?note('alert','err',t('ui.confirm.careful',{n:risky})):''}
+ ${rec?note('clock','err',t('ui.confirm.recent',{n:rec,days:RECENT_DAYS})):''}
+ ${root?note('lock','mut',t('ui.confirm.root')):''}
  <ul>${l.map(i=>`<li>${esc(i.title)} — ${fmt(i.size)}</li>`).join('')}</ul>
- <p class="mut">${esc(t('ui.confirm.permanent'))}</p>
+ ${note('info','mut',t('ui.confirm.permanent'))}
  <div style="display:flex;gap:8px;justify-content:flex-end"><button onclick="dlg.close()">${esc(t('ui.cancel'))}</button><button class="dan" onclick="doClean()">${esc(t('web.yes_delete'))}</button></div>`;
  dlg.showModal();
 }

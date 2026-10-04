@@ -81,6 +81,14 @@ def is_root(i):
     return i["gkey"] == "system"
 
 
+def icon_label(icon, text, css=(), **kw):
+    """Ikonka + matn (emoji o'rniga tizim ikonkasi)."""
+    box = Gtk.Box(spacing=8, **kw)
+    box.append(Gtk.Image(icon_name=icon, valign=Gtk.Align.START, css_classes=list(css)))
+    box.append(Gtk.Label(label=text, xalign=0, wrap=True, hexpand=True, css_classes=list(css)))
+    return box
+
+
 def scrolled_label(text, height):
     lbl = Gtk.Label(label=text, xalign=0, wrap=True, selectable=True)
     return Gtk.ScrolledWindow(child=lbl, min_content_height=height, propagate_natural_width=True)
@@ -296,18 +304,21 @@ class Window(Adw.ApplicationWindow):
             card.append(opt)
 
         if quick:
-            btn = Gtk.Button(label=_("ui.quick.btn", size=fmt(quick_size)), halign=Gtk.Align.CENTER,
-                             css_classes=["suggested-action", "pill", "big-button"], margin_top=6)
+            btn = Gtk.Button(child=Adw.ButtonContent(icon_name="edit-clear-all-symbolic",
+                                                     label=_("ui.quick.btn", size=fmt(quick_size))),
+                             halign=Gtk.Align.CENTER, css_classes=["suggested-action", "pill", "big-button"],
+                             margin_top=6)
             btn.connect("clicked", lambda *_: self.confirm(quick, quick_mode=True))
             card.append(btn)
         else:
-            card.append(Gtk.Label(label=_("ui.quick.none"), xalign=0))
+            card.append(icon_label("emblem-ok-symbolic", _("ui.quick.none"), ["success"]))
 
         if skipped_open:
             names = sorted({i["app"] for i in skipped_open if i.get("app")})
-            card.append(Gtk.Label(
-                label=_("ui.quick.skipped", size=fmt(sum(i["size"] for i in skipped_open)), apps=", ".join(names)),
-                xalign=0, wrap=True, css_classes=["dim-label", "hint"]))
+            card.append(icon_label(
+                "dialog-information-symbolic",
+                _("ui.quick.skipped", size=fmt(sum(i["size"] for i in skipped_open)), apps=", ".join(names)),
+                ["dim-label", "hint"]))
         box.append(card)
 
         # ko'rib chiqish kerak bo'lganlar
@@ -326,8 +337,8 @@ class Window(Adw.ApplicationWindow):
 
         n_recent = sum(i["recent"] for i in self.items)
         if n_recent:
-            box.append(Gtk.Label(
-                label=_("ui.protected", n=n_recent, days=cleaner.RECENT_DAYS), wrap=True, css_classes=["dim-label", "hint"]))
+            box.append(icon_label("security-high-symbolic", _("ui.protected", n=n_recent, days=cleaner.RECENT_DAYS),
+                                  ["dim-label", "hint"], margin_start=8, margin_end=8))
 
         self.overview_scroll.set_child(Adw.Clamp(child=box, maximum_size=760))
 
@@ -449,7 +460,7 @@ class Window(Adw.ApplicationWindow):
         if i.get("path"):
             sub += f"\n{i['path']}"
         if i.get("warn"):
-            sub += f"\n⚠ {i['warn']}"
+            sub += f"\n{i['warn']}"
         row = Adw.ActionRow(use_markup=False, subtitle_lines=4, title_lines=2)  # avval markup o'chadi
         row.set_title(i["title"])
         row.set_subtitle(sub)
@@ -459,6 +470,9 @@ class Window(Adw.ApplicationWindow):
         row.set_activatable_widget(check)
         self.checks[i["id"]] = check
 
+        if i.get("warn"):
+            row.add_suffix(Gtk.Image(icon_name="dialog-warning-symbolic", css_classes=["warning"],
+                                     tooltip_text=i["warn"], valign=Gtk.Align.CENTER))
         if i["recent"]:
             row.add_suffix(Gtk.Label(label=_("ui.label.recent"), css_classes=["badge", "accent"],
                                      valign=Gtk.Align.CENTER))
@@ -525,24 +539,30 @@ class Window(Adw.ApplicationWindow):
     # ---------------------------------------------------------------- o'chirish
     def confirm(self, lst, quick_mode=False):
         total = sum(i["size"] for i in lst)
-        notes = []
+        notes = []  # (ikonka, matn, css)
         careful = sum(i["safety"] == cleaner.CAREFUL for i in lst)
         recent = sum(i["recent"] for i in lst)
         if careful:
-            notes.append(_("ui.confirm.careful", n=careful))
+            notes.append(("dialog-warning-symbolic", _("ui.confirm.careful", n=careful), ["error"]))
         if recent:
-            notes.append(_("ui.confirm.recent", n=recent, days=cleaner.RECENT_DAYS))
+            notes.append(("document-open-recent-symbolic",
+                          _("ui.confirm.recent", n=recent, days=cleaner.RECENT_DAYS), ["warning"]))
         if any(is_root(i) for i in lst):
-            notes.append(_("ui.confirm.root"))
-        notes.append(_("ui.confirm.quick_note") if quick_mode else _("ui.confirm.permanent"))
+            notes.append(("dialog-password-symbolic", _("ui.confirm.root"), []))
+        notes.append(("emblem-ok-symbolic", _("ui.confirm.quick_note"), ["success"]) if quick_mode
+                     else ("dialog-information-symbolic", _("ui.confirm.permanent"), ["dim-label"]))
 
         dlg = Adw.AlertDialog(heading=_("ui.confirm.quick_heading", size=fmt(total)) if quick_mode
                               else _("ui.confirm.heading", n=len(lst)),
-                              body=_("ui.confirm.body", n=len(lst), size=fmt(total)) + "\n\n" + "\n".join(notes))
-        exp = Gtk.Expander(label=_("ui.confirm.list"), expanded=not quick_mode)
+                              body=_("ui.confirm.body", n=len(lst), size=fmt(total)))
+        extra = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+        for icon, text, css in notes:
+            extra.append(icon_label(icon, text, css))
+        exp = Gtk.Expander(label=_("ui.confirm.list"), expanded=not quick_mode, margin_top=6)
         exp.set_child(scrolled_label("\n".join(f"• {i['title']} — {fmt(i['size'])}" for i in lst),
                                      min(260, 24 * len(lst) + 10)))
-        dlg.set_extra_child(exp)
+        extra.append(exp)
+        dlg.set_extra_child(extra)
         dlg.add_response("cancel", _("ui.cancel"))
         dlg.add_response("go", _("ui.clean") if quick_mode else _("ui.delete"))
         dlg.set_response_appearance("go", Adw.ResponseAppearance.SUGGESTED if quick_mode

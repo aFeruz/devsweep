@@ -1,4 +1,4 @@
-# 🧹 DevSweep
+# DevSweep
 
 [English](README.md) · [Русский](README.ru.md) · **O'zbekcha**
 
@@ -32,9 +32,9 @@
 | Fayllar | dublikatlar (tarkibi bo'yicha), 100 MB dan katta fayllar, installerlar (`.deb`, `.apk`, `.iso`…), loglar, vaqtinchalik fayllar, chala yuklanganlar | ko'rib chiqing / ehtiyot bo'ling |
 
 **Belgilar:**
-- 🟢 **xavfsiz**: avtomatik qayta tiklanadi;
-- 🟡 **ko'rib chiqing**: o'chirishdan oldin tekshiring;
-- 🔴 **ehtiyot bo'ling**: ma'lumot yo'qolishi mumkin.
+- **xavfsiz**: avtomatik qayta tiklanadi;
+- **ko'rib chiqing**: o'chirishdan oldin tekshiring;
+- **ehtiyot bo'ling**: ma'lumot yo'qolishi mumkin.
 
 ### Xavfsizlik qoidalari
 
@@ -89,7 +89,7 @@ Bu buyruq **DevSweep**ni ilovalar menyusiga qo'shadi va terminal uchun `devsweep
 | Brauzer versiyasi (GTK kerak emas) | `devsweep --web` yoki `python3 cleaner.py` → http://127.0.0.1:8765 |
 
 1. Skanerlash tugashini kuting. Bu bir necha soniyadan 1-2 daqiqagacha davom etadi.
-2. **Umumiy** varaqda **🧹 Xavfsiz tozalash** tugmasini bosing. Barcha xavfsiz musor birdaniga o'chadi.
+2. **Umumiy** varaqda **Xavfsiz tozalash** tugmasini bosing. Barcha xavfsiz musor birdaniga o'chadi.
 3. **Batafsil** varaqda qolganlarini ko'rib chiqing va o'chirmoqchi bo'lganlaringizni belgilang.
 
 ### Qisqa tugmalar

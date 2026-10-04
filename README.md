@@ -1,4 +1,4 @@
-# 🧹 DevSweep
+# DevSweep
 
 **English** · [Русский](README.ru.md) · [O'zbekcha](README.uz.md)
 
@@ -31,7 +31,7 @@
 | System (password) | disabled snap revisions, APT cache, systemd journal | safe |
 | Files | duplicates (by content), files over 100 MB, installers (`.deb`, `.apk`, `.iso`…), logs, temp files, incomplete downloads | review / careful |
 
-**Labels:** 🟢 **safe** — regenerated automatically · 🟡 **review** — check before deleting · 🔴 **careful** — data may be lost.
+**Labels:** **safe** — regenerated automatically · **review** — check before deleting · **careful** — data may be lost.
 
 ### Safety rules
 
@@ -86,7 +86,7 @@ This adds **DevSweep** to the application menu and a `devsweep` terminal command
 | Browser UI (no GTK needed) | `devsweep --web` or `python3 cleaner.py` → http://127.0.0.1:8765 |
 
 1. Wait for the scan (a few seconds to 1–2 minutes).
-2. **Overview** tab → press **🧹 Safe clean** to remove all safe junk at once.
+2. **Overview** tab → press **Safe clean** to remove all safe junk at once.
 3. **Details** tab → review the rest and tick what you want to delete.
 
 ### Keyboard shortcuts
